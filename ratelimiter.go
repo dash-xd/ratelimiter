@@ -1,0 +1,97 @@
+package ratelimiter
+
+import (
+    "context"
+    "fmt"
+    "net/http"
+    "os"
+    "strconv"
+    "strings"
+
+    "github.com/golang-jwt/jwt"
+    "github.com/redis/go-redis/v9"
+)
+
+type Limiter interface {
+    CheckRateLimit(r *http.Request) error
+}
+
+type RedisRateLimiter struct {
+    client *redis.Client
+}
+
+func NewRedisRateLimiter(client *redis.Client) *RedisRateLimiter {
+    return &RedisRateLimiter{client: client}
+}
+
+func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
+    var rateLimiterKey string
+    apiKey := os.Getenv("API_KEY")
+    if apiKey == "" {
+        return fmt.Errorf("API key not configured")
+    }
+
+    defaultKeyPrefix := os.Getenv("DEFAULT_KEY_PREFIX")
+    if defaultKeyPrefix == "" {
+        return fmt.Errorf("DEFAULT_KEY_PREFIX environment variable not set")
+    }
+
+    if r.ContentLength == 0 {
+        return fmt.Errorf("Empty request body")
+    }
+
+    authHeader := r.Header.Get("Authorization")
+    if authHeader != "" {
+        token, err := jwt.Parse(strings.TrimPrefix(authHeader, "Bearer "), func(token *jwt.Token) (interface{}, error) {
+            return []byte(os.Getenv("JWT_SECRET")), nil
+        })
+        if err == nil && token.Valid {
+            claims := token.Claims.(jwt.MapClaims)
+            rateLimiterKey = fmt.Sprintf("%s:%v", defaultKeyPrefix, claims["key"])
+        }
+    }
+
+    if rateLimiterKey == "" && r.Header.Get("X-API-Key") == apiKey {
+        rateLimiterKey = fmt.Sprintf("%s:%v", defaultKeyPrefix, apiKey)
+    }
+
+    if rateLimiterKey == "" {
+        return fmt.Errorf("Unauthorized")
+    }
+
+    rateLimit, windowSize := getRateLimitAndWindowSize()
+
+    result, err := rl.client.Do(context.Background(), "FCALL", "sliding_window_counter_with_pubsub", 1, rateLimiterKey, rateLimit, windowSize).Result()
+    if err != nil {
+        errMsg := fmt.Sprintf("Error performing rate limiting: %v", err)
+        fmt.Println("Error:", errMsg)
+        return fmt.Errorf(errMsg)
+    }
+
+    rateLimited, ok := result.(int64)
+    if !ok {
+        return fmt.Errorf("Unexpected response type from rate limiter")
+    }
+    if rateLimited == 1 {
+        errMsg := "Rate limit exceeded"
+        fmt.Println("Error:", errMsg)
+        return fmt.Errorf(errMsg)
+    }
+
+    return nil
+}
+
+func getRateLimitAndWindowSize() (int, int) {
+    rateLimit := getEnvAsInt("RATE_LIMIT", 20)
+    windowSize := getEnvAsInt("WINDOW_SIZE", 60)
+    return rateLimit, windowSize
+}
+
+func getEnvAsInt(key string, defaultValue int) int {
+    if value, ok := os.LookupEnv(key); ok {
+        if intValue, err := strconv.Atoi(value); err == nil {
+            return intValue
+        }
+    }
+    return defaultValue
+}
