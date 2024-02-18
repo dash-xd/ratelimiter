@@ -88,7 +88,8 @@ func getRateLimitAndWindowSize() (int, int) {
 }
 
 func getEnvAsInt(key string, defaultValue int) int {
-    if value, ok := os.LookupEnv(key); ok {
+    value := os.Getenv(key)
+    if value != "" {
         if intValue, err := strconv.Atoi(value); err == nil {
             return intValue
         }
