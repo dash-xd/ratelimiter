@@ -20,8 +20,19 @@ type RedisRateLimiter struct {
     client *redis.Client
 }
 
-func NewRedisRateLimiter(client *redis.Client) *RedisRateLimiter {
-    return &RedisRateLimiter{client: client}
+func NewRedisRateLimiter() (*RedisRateLimiter, error) {
+    redisClient := redis.NewClient(&redis.Options{
+        Addr:     os.Getenv("REDIS_URI"),
+        Password: os.Getenv("REDISCLI_AUTH"),
+        DB:       0,
+    })
+
+    _, err := redisClient.Ping(context.Background()).Result()
+    if err != nil {
+        return nil, fmt.Errorf("error initializing Redis client: %v", err)
+    }
+
+    return &RedisRateLimiter{client: redisClient}, nil
 }
 
 func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
