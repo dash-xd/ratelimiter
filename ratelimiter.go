@@ -1,5 +1,5 @@
 package ratelimiter
-//
+
 import (
     "context"
     "fmt"
@@ -20,19 +20,21 @@ type RedisRateLimiter struct {
     client *redis.Client
 }
 
-func NewRedisRateLimiter() (*RedisRateLimiter, error) {
-    redisClient := redis.NewClient(&redis.Options{
-        Addr:     os.Getenv("REDIS_URI"),
-        Password: os.Getenv("REDISCLI_AUTH"),
-        DB:       0,
-    })
+func NewRedisRateLimiter(client *redis.Client) (*RedisRateLimiter, error) {
+    if client == nil {
+        client = redis.NewClient(&redis.Options{
+            Addr:     os.Getenv("REDIS_URI"),
+            Password: os.Getenv("REDISCLI_AUTH"),
+            DB:       0,
+        })
 
-    _, err := redisClient.Ping(context.Background()).Result()
-    if err != nil {
-        return nil, fmt.Errorf("error initializing Redis client: %v", err)
+        _, err := client.Ping(context.Background()).Result()
+        if err != nil {
+            return nil, fmt.Errorf("error initializing Redis client: %v", err)
+        }
     }
 
-    return &RedisRateLimiter{client: redisClient}, nil
+    return &RedisRateLimiter{client: client}, nil
 }
 
 func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
