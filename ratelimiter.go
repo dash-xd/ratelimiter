@@ -22,6 +22,7 @@ type RedisRateLimiter struct {
 
 func NewRedisRateLimiter(client *redis.Client) (*RedisRateLimiter, error) {
     if client == nil {
+        fmt.Println("initializing redis within rate limiter ... ")
         client = redis.NewClient(&redis.Options{
             Addr:     os.Getenv("REDIS_URI"),
             Password: os.Getenv("REDISCLI_AUTH"),
