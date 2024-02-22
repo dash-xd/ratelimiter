@@ -21,6 +21,7 @@ type RedisRateLimiter struct {
 }
 
 func NewRedisRateLimiter(client *redis.Client) (*RedisRateLimiter, error) {
+    fmt.Println("Running rate limiter ... ")
     if client == nil {
         fmt.Println("initializing redis within rate limiter ... ")
         client = redis.NewClient(&redis.Options{
@@ -34,7 +35,6 @@ func NewRedisRateLimiter(client *redis.Client) (*RedisRateLimiter, error) {
             return nil, fmt.Errorf("error initializing Redis client: %v", err)
         }
     }
-
     return &RedisRateLimiter{client: client}, nil
 }
 
