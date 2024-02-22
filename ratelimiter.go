@@ -50,10 +50,6 @@ func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
         return fmt.Errorf("DEFAULT_KEY_PREFIX environment variable not set")
     }
 
-    if r.ContentLength == 0 {
-        return fmt.Errorf("Empty request body")
-    }
-
     authHeader := r.Header.Get("Authorization")
     if authHeader != "" {
         token, err := jwt.Parse(strings.TrimPrefix(authHeader, "Bearer "), func(token *jwt.Token) (interface{}, error) {
