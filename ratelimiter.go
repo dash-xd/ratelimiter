@@ -35,10 +35,12 @@ func NewRedisRateLimiter(client *redis.Client) (*RedisRateLimiter, error) {
             return nil, fmt.Errorf("error initializing Redis client: %v", err)
         }
     }
+    fmt.Println("Redis rate limiter initialized  ... ")
     return &RedisRateLimiter{client: client}, nil
 }
 
 func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
+    fmt.Println("Checking rate limit ... ")
     var rateLimiterKey string
     apiKey := os.Getenv("API_KEY") // only api key auth configured at this time
     if apiKey == "" {
@@ -73,6 +75,7 @@ func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
 
     result, err := rl.client.Do(context.Background(), "FCALL", "sliding_window_counter_with_pubsub", 1, rateLimiterKey, rateLimit, windowSize).Result()
     if err != nil {
+        fmt.Println("Error performing rate limiting")
         errMsg := fmt.Sprintf("Error performing rate limiting: %v", err)
         fmt.Println("Error:", errMsg)
         return fmt.Errorf(errMsg)
@@ -80,15 +83,17 @@ func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
 
     rateLimited, ok := result.(int64)
     if !ok {
+        fmt.Println("the redis rate limiter response was not ok ...  ")
         return fmt.Errorf("Unexpected response type from rate limiter")
     }
     if rateLimited == 1 {
+        fmt.Println("Uh oh! Rate limited ...  ")
         errMsg := "Rate limit exceeded"
         fmt.Println("Error:", errMsg)
         return fmt.Errorf(errMsg)
     }
     
-    fmt.Println("Rate limite completed, returning nil ... ")
+    fmt.Println("Rate limit completed, returning nil ... ")
     return nil
 }
 
