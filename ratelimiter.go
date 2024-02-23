@@ -87,7 +87,8 @@ func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
         fmt.Println("Error:", errMsg)
         return fmt.Errorf(errMsg)
     }
-
+    
+    fmt.Println("Rate limite completed, returning nil ... ")
     return nil
 }
 
