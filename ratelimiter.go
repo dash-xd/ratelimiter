@@ -1,5 +1,4 @@
 package ratelimiter
-//
 import (
     "context"
     "fmt"
@@ -40,7 +39,6 @@ func NewRedisRateLimiter(client *redis.Client) (*RedisRateLimiter, error) {
 }
 
 func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
-    fmt.Println("Checking rate limit ... ")
     var rateLimiterKey string
     apiKey := os.Getenv("API_KEY") // only api key auth configured at this time
     if apiKey == "" {
@@ -93,7 +91,6 @@ func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
         return fmt.Errorf(errMsg)
     }
     
-    fmt.Println("Rate limit completed, returning nil ... ")
     return nil
 }
 
