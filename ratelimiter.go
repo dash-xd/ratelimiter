@@ -19,7 +19,7 @@ type RedisRateLimiter struct {
     client *redis.Client
 }
 
-func LazyLoadRedis(client *redis.Client) (*RedisRateLimiter, error) {
+func Init(client *redis.Client) (*RedisRateLimiter, error) {
     fmt.Println("Running rate limiter ... ")
     if client == nil {
         fmt.Println("initializing redis within rate limiter ... ")
