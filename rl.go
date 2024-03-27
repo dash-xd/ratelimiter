@@ -63,7 +63,7 @@ func (rl *RedisRateLimiter) CheckRateLimit(r *http.Request) error {
     }
 
     if rateLimiterKey == "" && r.Header.Get("X-API-Key") == apiKey {
-        rateLimiterKey = fmt.Sprintf("%s:%v", defaultKeyPrefix, apiKey)
+        rateLimiterKey = fmt.Sprintf("%s:%s", defaultKeyPrefix, "success")
     }
 
     if rateLimiterKey == "" {
