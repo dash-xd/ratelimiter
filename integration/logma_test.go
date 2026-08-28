@@ -102,18 +102,10 @@ func TestLifecycleEventsReachLogmaServerlessSubscriber(t *testing.T) {
 	}
 
 	got := collectEvents(t, ctx, events, 4)
-	wantStages := []ratelimiter.Stage{
-		ratelimiter.StagePreflight,
-		ratelimiter.StageAllowed,
-		ratelimiter.StagePreflight,
-		ratelimiter.StageBlocked,
-	}
+	seen := map[string]map[ratelimiter.Stage]int{}
 	for i, event := range got {
 		if event.Schema != ratelimiter.EventSchema {
 			t.Fatalf("event %d schema = %q", i, event.Schema)
-		}
-		if event.Stage != wantStages[i] {
-			t.Fatalf("event %d stage = %q, want %q", i, event.Stage, wantStages[i])
 		}
 		if event.Callback.Purpose != ratelimiter.PurposeTracing {
 			t.Fatalf("event %d purpose = %q", i, event.Callback.Purpose)
@@ -121,7 +113,14 @@ func TestLifecycleEventsReachLogmaServerlessSubscriber(t *testing.T) {
 		if event.Callback.Data["tenant"] != "tenant-a" || event.Callback.Data["resolved_from"] != "render" {
 			t.Fatalf("event %d callback data = %#v", i, event.Callback.Data)
 		}
+		if seen[event.Request.ID] == nil {
+			seen[event.Request.ID] = map[ratelimiter.Stage]int{}
+		}
+		seen[event.Request.ID][event.Stage]++
 	}
+
+	assertStages(t, seen["req-1"], ratelimiter.StagePreflight, ratelimiter.StageAllowed)
+	assertStages(t, seen["req-2"], ratelimiter.StagePreflight, ratelimiter.StageBlocked)
 
 	cancel()
 	for _, done := range stopped {
@@ -129,6 +128,18 @@ func TestLifecycleEventsReachLogmaServerlessSubscriber(t *testing.T) {
 		case <-done:
 		case <-time.After(2 * time.Second):
 			t.Fatal("logma subscriber did not stop")
+		}
+	}
+}
+
+func assertStages(t *testing.T, got map[ratelimiter.Stage]int, stages ...ratelimiter.Stage) {
+	t.Helper()
+	if len(got) != len(stages) {
+		t.Fatalf("unexpected stage set: %#v", got)
+	}
+	for _, stage := range stages {
+		if got[stage] != 1 {
+			t.Fatalf("stage %q count = %d, want 1; all stages: %#v", stage, got[stage], got)
 		}
 	}
 }
