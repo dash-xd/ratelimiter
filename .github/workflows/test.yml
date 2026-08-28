@@ -14,23 +14,23 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout ratelimiter
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Checkout sus-redis
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: xd-dash/sus-redis
           path: .deps/sus-redis
 
       - name: Checkout logma-serverless tester
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: xd-dash/logma-serverless
           ref: claude/main
           path: .deps/logma-serverless
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26.x'
           cache: true
