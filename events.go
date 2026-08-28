@@ -49,12 +49,12 @@ type eventContext struct {
 }
 
 func buildEventContext(profile Profile, in Input) ([]byte, error) {
-	resolver, ok := profile.Resolver().(TargetResolver)
+	resolver, ok := profiledef.ResolverOf(profile).(TargetResolver)
 	if !ok || resolver == nil {
-		return nil, fmt.Errorf("%s profile has an invalid target resolver", profile.Kind())
+		return nil, fmt.Errorf("%s profile has an invalid target resolver", profiledef.KindOf(profile))
 	}
 
-	stages := stagesForProfile(profile.Kind())
+	stages := stagesForProfile(profiledef.KindOf(profile))
 	ctx := eventContext{
 		Bucket:  in.Bucket,
 		Request: in.Request,
