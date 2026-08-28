@@ -103,6 +103,7 @@ local function publish_stage(context, stage, now_ms, rate_limit)
         return 0
     end
 
+    local namespace = context.request and context.request.namespace or {}
     local failures = 0
     for _, target in ipairs(targets) do
         local event = {
@@ -118,7 +119,16 @@ local function publish_stage(context, stage, now_ms, rate_limit)
             }
         }
 
-        local reply = redis.pcall("PUBLISH", target.channel, cjson.encode(event))
+        local message = {
+            type = "Event",
+            sentTimeUtc = now_ms,
+            message = event,
+            parentNamespace = namespace.parent or "",
+            childNamespace = namespace.child or "",
+            channel = target.channel
+        }
+
+        local reply = redis.pcall("PUBLISH", target.channel, cjson.encode(message))
         if type(reply) == "table" and reply.err then
             failures = failures + 1
         end
