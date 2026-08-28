@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Limiter binds one of the named profiles to a RedisStore.
+// Limiter binds one imported profile to a RedisStore.
 type Limiter struct {
 	store   *RedisStore
 	profile Profile
@@ -16,7 +16,7 @@ func (s *RedisStore) Limiter(profile Profile) (*Limiter, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("redis store is not initialized")
 	}
-	if err := profile.validate(); err != nil {
+	if err := profile.Validate(); err != nil {
 		return nil, err
 	}
 	return &Limiter{store: s, profile: profile}, nil
@@ -37,18 +37,18 @@ func (l *Limiter) Check(ctx context.Context, in Input, limit Limit) (Decision, e
 	keys := []string{windowKey}
 	args := []any{limit.MaxRequests, limit.Window.Milliseconds()}
 
-	if l.profile.publishes() {
+	if l.profile.Publishes() {
 		ctxJSON, err := buildEventContext(l.profile, in)
 		if err != nil {
 			return Decision{}, err
 		}
-		if l.profile.usesBlockedKey() {
+		if l.profile.UsesBlockedKey() {
 			keys = append(keys, blockedKey)
 		}
 		args = append(args, string(ctxJSON))
 	}
 
-	values, err := l.store.store.Call(ctx, l.profile.functionName(), keys, args...)
+	values, err := l.store.store.Call(ctx, l.profile.FunctionName(), keys, args...)
 	if err != nil {
 		return Decision{}, err
 	}
