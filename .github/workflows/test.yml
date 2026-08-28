@@ -29,6 +29,13 @@ jobs:
           ref: claude/main
           path: .deps/logma-serverless
 
+      - name: Checkout stateful Logma
+        uses: actions/checkout@v7
+        with:
+          repository: xd-dash/logma
+          ref: main
+          path: .deps/logma
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
@@ -73,9 +80,30 @@ jobs:
           echo "Redis did not start" >&2
           exit 1
 
-      - name: Logma-serverless integration test
+      - name: Start stateful Logma
+        shell: bash
+        env:
+          REDIS_URI: 127.0.0.1:6380
+          API_KEY: ratelimiter-test
+        run: |
+          set -euo pipefail
+          cd .deps/logma
+          nohup go run ./cmd/api 8081 >/tmp/ratelimiter-logma.log 2>&1 &
+          for _ in $(seq 1 120); do
+            if (echo > /dev/tcp/127.0.0.1/8081) >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.1
+          done
+          cat /tmp/ratelimiter-logma.log >&2 || true
+          echo "Logma did not start" >&2
+          exit 1
+
+      - name: Logma integrations
         env:
           RATELIMITER_REDIS_ADDR: 127.0.0.1:6380
+          RATELIMITER_LOGMA_URL: http://127.0.0.1:8081
+          RATELIMITER_LOGMA_API_KEY: ratelimiter-test
         run: |
           go mod edit -require=github.com/xd-dash/logma-serverless@v0.0.0
           go mod edit -replace=github.com/xd-dash/logma-serverless=./.deps/logma-serverless
