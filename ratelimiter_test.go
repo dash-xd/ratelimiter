@@ -4,29 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
-)
 
-func TestProfileContractsAreDistinct(t *testing.T) {
-	resolver := StaticTargets(map[Stage][]Target{
-		StagePreflight: {{Channel: "test:preflight", Purpose: PurposeLogs}},
-	})
-	profiles := []Profile{Minimal(), Preflight(resolver), Decisions(resolver), Lifecycle(resolver)}
-	seenFunctions := map[string]bool{}
-	seenLibraries := map[string]bool{}
-	for _, profile := range profiles {
-		if err := profile.validate(); err != nil {
-			t.Fatalf("profile %q: %v", profile.kind, err)
-		}
-		if seenFunctions[profile.functionName()] {
-			t.Fatalf("duplicate function name %q", profile.functionName())
-		}
-		if seenLibraries[profile.libraryName()] {
-			t.Fatalf("duplicate library name %q", profile.libraryName())
-		}
-		seenFunctions[profile.functionName()] = true
-		seenLibraries[profile.libraryName()] = true
-	}
-}
+	"github.com/dash-xd/ratelimiter/internal/profiledef"
+)
 
 func TestNamespaceStageTargets(t *testing.T) {
 	resolver := NamespaceStageTargets("logs:rate_limiters", PurposeMetrics, Metadata{"source": "fixed"})
@@ -42,7 +22,7 @@ func TestNamespaceStageTargets(t *testing.T) {
 }
 
 func TestBuildEventContextMergesRequestData(t *testing.T) {
-	profile := Lifecycle(StaticTargets(map[Stage][]Target{
+	profile := profiledef.Lifecycle(StaticTargets(map[Stage][]Target{
 		StageAllowed: {{
 			Channel: "events:allowed",
 			Purpose: PurposeTracing,
