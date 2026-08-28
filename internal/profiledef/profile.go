@@ -11,8 +11,8 @@ const (
 	LifecycleKind Kind = "lifecycle"
 )
 
-// Definition is an opaque rate-limiter composition. Callers should construct
-// definitions through one of the public profile packages.
+// Definition is an opaque rate-limiter composition. Public callers construct
+// values through one of the profile packages.
 type Definition struct {
 	kind     Kind
 	resolver any
@@ -34,7 +34,7 @@ func Lifecycle(resolver any) Definition {
 	return Definition{kind: LifecycleKind, resolver: resolver}
 }
 
-func (d Definition) Validate() error {
+func Validate(d Definition) error {
 	switch d.kind {
 	case MinimalKind:
 		return nil
@@ -48,23 +48,23 @@ func (d Definition) Validate() error {
 	}
 }
 
-func (d Definition) Kind() Kind {
+func KindOf(d Definition) Kind {
 	return d.kind
 }
 
-func (d Definition) Resolver() any {
+func ResolverOf(d Definition) any {
 	return d.resolver
 }
 
-func (d Definition) Publishes() bool {
+func Publishes(d Definition) bool {
 	return d.kind != MinimalKind
 }
 
-func (d Definition) UsesBlockedKey() bool {
+func UsesBlockedKey(d Definition) bool {
 	return d.kind == DecisionsKind || d.kind == LifecycleKind
 }
 
-func (d Definition) FunctionName() string {
+func FunctionName(d Definition) string {
 	switch d.kind {
 	case MinimalKind:
 		return "dashxd_ratelimit_minimal_v1"
@@ -79,14 +79,14 @@ func (d Definition) FunctionName() string {
 	}
 }
 
-func (d Definition) LibraryName() string {
+func LibraryName(d Definition) string {
 	if d.kind == "" {
 		return ""
 	}
 	return "dashxd_ratelimiter_" + string(d.kind) + "_v1"
 }
 
-func (d Definition) LuaWrapperName() string {
+func LuaWrapperName(d Definition) string {
 	switch d.kind {
 	case MinimalKind:
 		return "rate_limit_minimal"
