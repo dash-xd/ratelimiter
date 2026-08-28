@@ -29,6 +29,7 @@ func TestLifecycleEventsReachLogmaServerlessSubscriber(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	subCtx, stopSubscribers := context.WithCancel(ctx)
 	subscribers := redis.NewClient(&redis.Options{Addr: os.Getenv("RATELIMITER_REDIS_ADDR")})
 	defer subscribers.Close()
 
@@ -36,7 +37,7 @@ func TestLifecycleEventsReachLogmaServerlessSubscriber(t *testing.T) {
 	events := make(chan ratelimiter.Event, 8)
 	stopped := make([]<-chan struct{}, 0, len(channels))
 	for _, channel := range channels {
-		sub := logmapubsub.Subscribe(ctx, subscribers, channel, func(payload string) {
+		sub := logmapubsub.Subscribe(subCtx, subscribers, channel, func(payload string) {
 			var message ratelimiter.PubSubMessage
 			if err := json.Unmarshal([]byte(payload), &message); err != nil {
 				t.Errorf("unmarshal pubsub message: %v", err)
@@ -107,6 +108,7 @@ func TestLifecycleEventsReachLogmaServerlessSubscriber(t *testing.T) {
 		t.Fatalf("unexpected minimal blocked decision: %#v", minimalBlocked)
 	}
 
+	stopSubscribers()
 	for _, done := range stopped {
 		select {
 		case <-done:
