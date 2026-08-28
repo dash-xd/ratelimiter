@@ -58,15 +58,25 @@ func TestLifecycleEventsReachLogmaServerlessSubscriber(t *testing.T) {
 			},
 		}}
 	})
-	profile := ratelimiter.Lifecycle(resolver)
+	minimalProfile := ratelimiter.Minimal()
+	preflightProfile := ratelimiter.Preflight(resolver)
+	decisionsProfile := ratelimiter.Decisions(resolver)
+	lifecycleProfile := ratelimiter.Lifecycle(resolver)
+
 	store, err := ratelimiter.NewRedisStore(commands, ratelimiter.RedisConfig{Keyspace: "test:ratelimit"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Bootstrap(ctx, ratelimiter.Minimal(), profile); err != nil {
+	if err := store.Bootstrap(
+		ctx,
+		minimalProfile,
+		preflightProfile,
+		decisionsProfile,
+		lifecycleProfile,
+	); err != nil {
 		t.Fatal(err)
 	}
-	limiter, err := store.Limiter(profile)
+	limiter, err := store.Limiter(lifecycleProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +131,29 @@ func TestLifecycleEventsReachLogmaServerlessSubscriber(t *testing.T) {
 
 	assertStages(t, seen["req-1"], ratelimiter.StagePreflight, ratelimiter.StageAllowed)
 	assertStages(t, seen["req-2"], ratelimiter.StagePreflight, ratelimiter.StageBlocked)
+
+	minimal, err := store.Limiter(minimalProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	minimalInput := ratelimiter.Input{Bucket: "minimal-client"}
+	minimalLimit := ratelimiter.Limit{MaxRequests: 1, Window: time.Minute}
+
+	minimalAllowed, err := minimal.Check(ctx, minimalInput, minimalLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !minimalAllowed.Allowed || minimalAllowed.PublishFailures != 0 || minimalAllowed.BlockedCount != 0 {
+		t.Fatalf("unexpected minimal allowed decision: %#v", minimalAllowed)
+	}
+
+	minimalBlocked, err := minimal.Check(ctx, minimalInput, minimalLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if minimalBlocked.Allowed || minimalBlocked.PublishFailures != 0 || minimalBlocked.BlockedCount != 0 {
+		t.Fatalf("unexpected minimal blocked decision: %#v", minimalBlocked)
+	}
 
 	cancel()
 	for _, done := range stopped {
