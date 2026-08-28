@@ -1,6 +1,6 @@
 //go:build integration
 
-package integration_test
+package ratelimiter_test
 
 import (
 	"context"

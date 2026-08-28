@@ -13,7 +13,7 @@ The module keeps the public package at the repository root so callers continue t
 ├── internal/
 │   ├── redisfunc/
 │   └── redisstore/
-├── integration/
+├── integration_test.go
 ├── doc.go
 ├── events.go
 ├── limiter.go
@@ -276,7 +276,7 @@ CI checks out:
 - `xd-dash/sus-redis` and runs its packaged `redis-server` directly when compatible, with a Redis container as fallback;
 - `xd-dash/logma-serverless` and uses its real reconnecting `pubsub.Subscribe` implementation.
 
-The integration test bootstraps Redis Functions, makes one allowed and one blocked request, and verifies Logma receives:
+The root-level `integration_test.go` is build-tagged with `integration`, uses the external `ratelimiter_test` package, bootstraps Redis Functions, makes one allowed and one blocked request, and verifies Logma receives:
 
 ```
 req-1: preflight + allowed

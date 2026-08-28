@@ -79,4 +79,4 @@ jobs:
         run: |
           go mod edit -require=github.com/xd-dash/logma-serverless@v0.0.0
           go mod edit -replace=github.com/xd-dash/logma-serverless=./.deps/logma-serverless
-          go test -mod=mod -tags=integration ./integration
+          go test -mod=mod -tags=integration .
