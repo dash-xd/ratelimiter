@@ -11,6 +11,10 @@ import (
 	"time"
 
 	ratelimiter "github.com/dash-xd/ratelimiter"
+	decisionsprofile "github.com/dash-xd/ratelimiter/profile/decisions"
+	lifecycleprofile "github.com/dash-xd/ratelimiter/profile/lifecycle"
+	minimalprofile "github.com/dash-xd/ratelimiter/profile/minimal"
+	preflightprofile "github.com/dash-xd/ratelimiter/profile/preflight"
 	logmapubsub "github.com/xd-dash/logma-serverless/pubsub"
 	"github.com/redis/go-redis/v9"
 )
@@ -58,10 +62,10 @@ func TestLifecycleEventsReachLogmaServerlessSubscriber(t *testing.T) {
 			},
 		}}
 	})
-	minimalProfile := ratelimiter.Minimal()
-	preflightProfile := ratelimiter.Preflight(resolver)
-	decisionsProfile := ratelimiter.Decisions(resolver)
-	lifecycleProfile := ratelimiter.Lifecycle(resolver)
+	minimalProfile := minimalprofile.New()
+	preflightProfile := preflightprofile.New(resolver)
+	decisionsProfile := decisionsprofile.New(resolver)
+	lifecycleProfile := lifecycleprofile.New(resolver)
 
 	store, err := ratelimiter.NewRedisStore(commands, ratelimiter.RedisConfig{Keyspace: "test:ratelimit"})
 	if err != nil {
