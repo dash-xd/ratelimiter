@@ -3,6 +3,8 @@ package ratelimiter
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/dash-xd/ratelimiter/internal/profiledef"
 )
 
 const EventSchema = "dashxd.ratelimiter.event.v1"
@@ -47,7 +49,12 @@ type eventContext struct {
 }
 
 func buildEventContext(profile Profile, in Input) ([]byte, error) {
-	stages := stagesForProfile(profile.kind)
+	resolver, ok := profile.Resolver().(TargetResolver)
+	if !ok || resolver == nil {
+		return nil, fmt.Errorf("%s profile has an invalid target resolver", profile.Kind())
+	}
+
+	stages := stagesForProfile(profile.Kind())
 	ctx := eventContext{
 		Bucket:  in.Bucket,
 		Request: in.Request,
@@ -55,7 +62,7 @@ func buildEventContext(profile Profile, in Input) ([]byte, error) {
 	}
 
 	for _, stage := range stages {
-		targets := profile.resolver.ResolveTargets(in, stage)
+		targets := resolver.ResolveTargets(in, stage)
 		if len(targets) > maxTargetsPerStage {
 			return nil, fmt.Errorf("%s stage exceeds %d pubsub targets", stage, maxTargetsPerStage)
 		}
@@ -106,13 +113,13 @@ func buildEventContext(profile Profile, in Input) ([]byte, error) {
 	return encoded, nil
 }
 
-func stagesForProfile(kind profileKind) []Stage {
+func stagesForProfile(kind profiledef.Kind) []Stage {
 	switch kind {
-	case profilePreflight:
+	case profiledef.PreflightKind:
 		return []Stage{StagePreflight}
-	case profileDecisions:
+	case profiledef.DecisionsKind:
 		return []Stage{StageAllowed, StageBlocked}
-	case profileLifecycle:
+	case profiledef.LifecycleKind:
 		return []Stage{StagePreflight, StageAllowed, StageBlocked}
 	default:
 		return nil
