@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/dash-xd/ratelimiter/internal/profiledef"
 )
 
 // Limiter binds one imported profile to a RedisStore.
@@ -16,7 +18,7 @@ func (s *RedisStore) Limiter(profile Profile) (*Limiter, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("redis store is not initialized")
 	}
-	if err := profile.Validate(); err != nil {
+	if err := profiledef.Validate(profile); err != nil {
 		return nil, err
 	}
 	return &Limiter{store: s, profile: profile}, nil
@@ -37,18 +39,18 @@ func (l *Limiter) Check(ctx context.Context, in Input, limit Limit) (Decision, e
 	keys := []string{windowKey}
 	args := []any{limit.MaxRequests, limit.Window.Milliseconds()}
 
-	if l.profile.Publishes() {
+	if profiledef.Publishes(l.profile) {
 		ctxJSON, err := buildEventContext(l.profile, in)
 		if err != nil {
 			return Decision{}, err
 		}
-		if l.profile.UsesBlockedKey() {
+		if profiledef.UsesBlockedKey(l.profile) {
 			keys = append(keys, blockedKey)
 		}
 		args = append(args, string(ctxJSON))
 	}
 
-	values, err := l.store.store.Call(ctx, l.profile.FunctionName(), keys, args...)
+	values, err := l.store.store.Call(ctx, profiledef.FunctionName(l.profile), keys, args...)
 	if err != nil {
 		return Decision{}, err
 	}
