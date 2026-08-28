@@ -9,7 +9,19 @@ import (
 
 const EventSchema = "dashxd.ratelimiter.event.v1"
 
-// Event is the stable JSON envelope emitted to Pub/Sub subscribers.
+// PubSubMessage is the Logma-compatible outer Pub/Sub envelope. Stateful Logma
+// subscriptions decode and forward this shape while Message retains the stable
+// rate-limiter event contract.
+type PubSubMessage struct {
+	Type            string `json:"type"`
+	SentTimeUTC     int64  `json:"sentTimeUtc"`
+	Message         Event  `json:"message"`
+	ParentNamespace string `json:"parentNamespace,omitempty"`
+	ChildNamespace  string `json:"childNamespace,omitempty"`
+	Channel         string `json:"channel"`
+}
+
+// Event is the stable rate-limiter event carried inside PubSubMessage.Message.
 type Event struct {
 	Schema         string         `json:"schema"`
 	Type           string         `json:"type"`
