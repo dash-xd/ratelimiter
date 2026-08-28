@@ -9,6 +9,10 @@ import (
 	"time"
 
 	"github.com/dash-xd/ratelimiter"
+	decisionsprofile "github.com/dash-xd/ratelimiter/profile/decisions"
+	lifecycleprofile "github.com/dash-xd/ratelimiter/profile/lifecycle"
+	minimalprofile "github.com/dash-xd/ratelimiter/profile/minimal"
+	preflightprofile "github.com/dash-xd/ratelimiter/profile/preflight"
 )
 
 func main() {
@@ -77,13 +81,13 @@ func parseProfiles(raw string) ([]ratelimiter.Profile, error) {
 
 		switch name {
 		case "minimal":
-			profiles = append(profiles, ratelimiter.Minimal())
+			profiles = append(profiles, minimalprofile.New())
 		case "preflight":
-			profiles = append(profiles, ratelimiter.Preflight(noop))
+			profiles = append(profiles, preflightprofile.New(noop))
 		case "decisions":
-			profiles = append(profiles, ratelimiter.Decisions(noop))
+			profiles = append(profiles, decisionsprofile.New(noop))
 		case "lifecycle":
-			profiles = append(profiles, ratelimiter.Lifecycle(noop))
+			profiles = append(profiles, lifecycleprofile.New(noop))
 		default:
 			return nil, fmt.Errorf("unknown profile %q", name)
 		}
