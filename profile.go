@@ -102,10 +102,6 @@ func (p Profile) libraryName() string {
 	return "dashxd_ratelimiter_" + string(p.kind) + "_v1"
 }
 
-func (p Profile) registration() string {
-	return fmt.Sprintf("redis.register_function('%s', %s)", p.functionName(), p.luaWrapperName())
-}
-
 func (p Profile) luaWrapperName() string {
 	switch p.kind {
 	case profileMinimal:

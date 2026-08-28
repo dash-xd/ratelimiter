@@ -2,7 +2,6 @@ package ratelimiter
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 )
@@ -26,16 +25,6 @@ func TestProfileContractsAreDistinct(t *testing.T) {
 		}
 		seenFunctions[profile.functionName()] = true
 		seenLibraries[profile.libraryName()] = true
-	}
-}
-
-func TestRedisKeysShareClusterHashTag(t *testing.T) {
-	store := &RedisStore{keyspace: "prod:ratelimit"}
-	window, blocked := store.keys("tenant-a:client-7")
-	wantWindow := "prod:ratelimit:{tenant-a:client-7}:window"
-	wantBlocked := "prod:ratelimit:{tenant-a:client-7}:blocked"
-	if window != wantWindow || blocked != wantBlocked {
-		t.Fatalf("unexpected keys: %q %q", window, blocked)
 	}
 }
 
@@ -89,16 +78,5 @@ func TestInputAndLimitValidation(t *testing.T) {
 	}
 	if err := (Limit{MaxRequests: 1, Window: 500 * time.Microsecond}).validate(); err == nil {
 		t.Fatal("expected sub-millisecond window to be rejected")
-	}
-}
-
-func TestRenderLibraryRegistersOnlySelectedProfile(t *testing.T) {
-	profile := Minimal()
-	source := renderLibrary(profile)
-	if !strings.Contains(source, profile.libraryName()) || !strings.Contains(source, profile.functionName()) {
-		t.Fatalf("rendered source missing selected profile identifiers")
-	}
-	if strings.Contains(source, "redis.register_function('dashxd_ratelimit_lifecycle_v1'") {
-		t.Fatalf("rendered minimal library unexpectedly registers lifecycle function")
 	}
 }

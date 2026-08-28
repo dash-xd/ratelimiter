@@ -2,6 +2,32 @@
 
 This branch is an experimental package redesign. The production `main` branch is intentionally unchanged.
 
+## Repository layout
+
+The module keeps the public package at the repository root so callers continue to import `github.com/dash-xd/ratelimiter`. Infrastructure-only implementation details live under `internal/`, and executable bootstrap tooling lives under `cmd/`:
+
+```text
+.
+├── cmd/
+│   └── ratelimiter-bootstrap/
+├── internal/
+│   ├── redisfunc/
+│   └── redisstore/
+├── integration/
+├── doc.go
+├── events.go
+├── limiter.go
+├── profile.go
+├── store.go
+├── targets.go
+├── types.go
+├── go.mod
+└── go.sum
+```
+
+There is intentionally no `pkg/` directory: the module root is already the canonical public Go package.
+
+
 The package wraps Redis in two roles:
 
 1. **bootstrap** one or more named Redis Function profiles;
@@ -105,6 +131,18 @@ if !decision.Allowed {
     return decision.Err()
 }
 ```
+
+### Bootstrap command
+
+Deployment code can bootstrap Redis Functions without embedding bootstrap logic in an application binary:
+
+```bash
+REDIS_URI=127.0.0.1:6379 \
+  go run ./cmd/ratelimiter-bootstrap \
+  -profiles minimal,lifecycle
+```
+
+The command defaults to loading all profiles and uses the same `REDIS_URI` / `REDISCLI_AUTH` convention as the package helper.
 
 ### Bootstrap permissions
 

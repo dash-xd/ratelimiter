@@ -13,6 +13,9 @@ type Limiter struct {
 }
 
 func (s *RedisStore) Limiter(profile Profile) (*Limiter, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("redis store is not initialized")
+	}
 	if err := profile.validate(); err != nil {
 		return nil, err
 	}
@@ -20,6 +23,9 @@ func (s *RedisStore) Limiter(profile Profile) (*Limiter, error) {
 }
 
 func (l *Limiter) Check(ctx context.Context, in Input, limit Limit) (Decision, error) {
+	if l == nil || l.store == nil || l.store.store == nil {
+		return Decision{}, fmt.Errorf("limiter is not initialized")
+	}
 	if err := in.validate(); err != nil {
 		return Decision{}, fmt.Errorf("validate input: %w", err)
 	}
@@ -27,13 +33,9 @@ func (l *Limiter) Check(ctx context.Context, in Input, limit Limit) (Decision, e
 		return Decision{}, fmt.Errorf("validate limit: %w", err)
 	}
 
-	windowKey, blockedKey := l.store.keys(in.Bucket)
-	windowMS := limit.Window.Milliseconds()
-
-	args := []any{
-		"FCALL",
-		l.profile.functionName(),
-	}
+	windowKey, blockedKey := l.store.store.Keys(in.Bucket)
+	keys := []string{windowKey}
+	args := []any{limit.MaxRequests, limit.Window.Milliseconds()}
 
 	if l.profile.publishes() {
 		ctxJSON, err := buildEventContext(l.profile, in)
@@ -41,17 +43,14 @@ func (l *Limiter) Check(ctx context.Context, in Input, limit Limit) (Decision, e
 			return Decision{}, err
 		}
 		if l.profile.usesBlockedKey() {
-			args = append(args, 2, windowKey, blockedKey, limit.MaxRequests, windowMS, string(ctxJSON))
-		} else {
-			args = append(args, 1, windowKey, limit.MaxRequests, windowMS, string(ctxJSON))
+			keys = append(keys, blockedKey)
 		}
-	} else {
-		args = append(args, 1, windowKey, limit.MaxRequests, windowMS)
+		args = append(args, string(ctxJSON))
 	}
 
-	values, err := l.store.client.Do(ctx, args...).Slice()
+	values, err := l.store.store.Call(ctx, l.profile.functionName(), keys, args...)
 	if err != nil {
-		return Decision{}, fmt.Errorf("fcall %s: %w", l.profile.functionName(), err)
+		return Decision{}, err
 	}
 	return decodeDecision(values)
 }
