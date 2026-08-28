@@ -54,21 +54,22 @@ func (s *RedisStore) Bootstrap(ctx context.Context, profiles ...Profile) error {
 		return fmt.Errorf("at least one profile is required")
 	}
 
-	seen := make(map[profileKind]struct{}, len(profiles))
+	seen := make(map[string]struct{}, len(profiles))
 	for _, profile := range profiles {
-		if err := profile.validate(); err != nil {
+		if err := profile.Validate(); err != nil {
 			return err
 		}
-		if _, ok := seen[profile.kind]; ok {
+		libraryName := profile.LibraryName()
+		if _, ok := seen[libraryName]; ok {
 			continue
 		}
-		seen[profile.kind] = struct{}{}
+		seen[libraryName] = struct{}{}
 
-		source, err := redisfunc.Render(profile.libraryName(), profile.functionName(), profile.luaWrapperName())
+		source, err := redisfunc.Render(libraryName, profile.FunctionName(), profile.LuaWrapperName())
 		if err != nil {
-			return fmt.Errorf("render %s: %w", profile.libraryName(), err)
+			return fmt.Errorf("render %s: %w", libraryName, err)
 		}
-		if err := s.store.LoadFunction(ctx, profile.libraryName(), source); err != nil {
+		if err := s.store.LoadFunction(ctx, libraryName, source); err != nil {
 			return err
 		}
 	}
