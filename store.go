@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/dash-xd/ratelimiter/internal/profiledef"
 	"github.com/dash-xd/ratelimiter/internal/redisfunc"
 	"github.com/dash-xd/ratelimiter/internal/redisstore"
 	"github.com/redis/go-redis/v9"
@@ -56,16 +57,20 @@ func (s *RedisStore) Bootstrap(ctx context.Context, profiles ...Profile) error {
 
 	seen := make(map[string]struct{}, len(profiles))
 	for _, profile := range profiles {
-		if err := profile.Validate(); err != nil {
+		if err := profiledef.Validate(profile); err != nil {
 			return err
 		}
-		libraryName := profile.LibraryName()
+		libraryName := profiledef.LibraryName(profile)
 		if _, ok := seen[libraryName]; ok {
 			continue
 		}
 		seen[libraryName] = struct{}{}
 
-		source, err := redisfunc.Render(libraryName, profile.FunctionName(), profile.LuaWrapperName())
+		source, err := redisfunc.Render(
+			libraryName,
+			profiledef.FunctionName(profile),
+			profiledef.LuaWrapperName(profile),
+		)
 		if err != nil {
 			return fmt.Errorf("render %s: %w", libraryName, err)
 		}
