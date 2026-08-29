@@ -98,6 +98,9 @@ func buildEventContext(profile Profile, in Input) ([]byte, error) {
 	}
 
 	stages := stagesForProfile(profiledef.KindOf(profile))
+	if in.Preflight.hasConditions() && profiledef.SupportsPreflight(profile) {
+		stages = append(stages, StageShutdown)
+	}
 	ctx := eventContext{
 		Bucket:  in.Bucket,
 		Request: in.Request,
@@ -159,11 +162,11 @@ func buildEventContext(profile Profile, in Input) ([]byte, error) {
 func stagesForProfile(kind profiledef.Kind) []Stage {
 	switch kind {
 	case profiledef.PreflightKind:
-		return []Stage{StagePreflight, StageShutdown}
+		return []Stage{StagePreflight}
 	case profiledef.DecisionsKind:
 		return []Stage{StageAllowed, StageBlocked}
 	case profiledef.LifecycleKind:
-		return []Stage{StagePreflight, StageAllowed, StageBlocked, StageShutdown}
+		return []Stage{StagePreflight, StageAllowed, StageBlocked}
 	default:
 		return nil
 	}

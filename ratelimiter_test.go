@@ -70,3 +70,35 @@ func TestInputAndLimitValidation(t *testing.T) {
 		t.Fatal("expected sub-millisecond window to be rejected")
 	}
 }
+
+func TestBuildEventContextResolvesShutdownOnlyForArmedConditions(t *testing.T) {
+	sawShutdown := false
+	profile := profiledef.Preflight(TargetResolverFunc(func(_ Input, stage Stage) []Target {
+		if stage == StageShutdown {
+			sawShutdown = true
+		}
+		return nil
+	}))
+
+	if _, err := buildEventContext(profile, Input{Bucket: "plain"}); err != nil {
+		t.Fatal(err)
+	}
+	if sawShutdown {
+		t.Fatal("shutdown target resolved without an armed preflight condition")
+	}
+
+	sawShutdown = false
+	if _, err := buildEventContext(profile, Input{
+		Bucket: "timed",
+		Preflight: PreflightOptions{
+			Shutdown: ShutdownConditions{
+				Timer: &TimerCondition{After: time.Second},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !sawShutdown {
+		t.Fatal("shutdown target was not resolved for an armed timer")
+	}
+}

@@ -172,3 +172,62 @@ The command composes the same public profile packages used by applications. `Boo
 ## Integration test
 
 `integration_test.go` is build-tagged with `integration` and uses `package ratelimiter_test`, so it exercises the package as an external consumer. CI starts a small Redis instance, uses the real `logma-serverless` subscriber, and verifies lifecycle events for an allowed and blocked request.
+
+
+## Redis-owned preflight shutdown timer
+
+The preflight and lifecycle profiles can arm a shutdown timer while the rate-limit
+preflight is executing. The deadline and its original shutdown context live in
+Redis; application code only provides a periodic clock pulse with `Limiter.Tick`.
+
+```go
+resolver := ratelimiter.StaticTargets(map[ratelimiter.Stage][]ratelimiter.Target{
+    ratelimiter.StageShutdown: {{
+        Channel: "news:worker:shutdown",
+        Purpose: ratelimiter.PurposeLifecycleControl,
+    }},
+})
+
+profile := preflightprofile.New(resolver)
+
+in := ratelimiter.Input{
+    Bucket: "news:worker-7",
+    Preflight: ratelimiter.PreflightOptions{
+        Shutdown: ratelimiter.ShutdownConditions{
+            Timer: &ratelimiter.TimerCondition{
+                After: 30 * time.Minute,
+            },
+        },
+    },
+}
+
+_, err := limiter.Check(ctx, in, limit)
+```
+
+Timer state is stored under the same Redis Cluster hash tag as the rate-limit
+bucket. Repeating preflight does not extend an existing timer unless
+`TimerCondition.Reset` is explicitly set.
+
+A long-running process such as news, Logma, or a Logma serverless wrapper can
+provide the clock pulse at an interval appropriate to its shutdown precision:
+
+```go
+result, err := limiter.Tick(ctx, "news:worker-7")
+if err != nil {
+    return err
+}
+if result.Pending > 0 {
+    // The deadline is due but at least one configured shutdown channel had
+    // no subscriber. A later tick will retry.
+}
+```
+
+When the deadline is due, Redis publishes a `dashxd.ratelimiter.lifecycle.v1`
+signal with `type=lifecycle.shutdown` and `condition=timer`. Redis removes the
+timer only after every configured shutdown target has at least one Pub/Sub
+subscriber for that dispatch. The callback is therefore only a clock source;
+deadline evaluation and shutdown dispatch remain in the Redis Function.
+
+The timer member is named `shutdown:timer`. Future shutdown conditions such as
+quote counts or streamed-byte limits can use sibling members and the same
+lifecycle signal path without changing callers that consume shutdown signals.
