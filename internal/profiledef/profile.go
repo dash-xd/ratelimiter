@@ -11,6 +11,22 @@ const (
 	LifecycleKind Kind = "lifecycle"
 )
 
+type Capability uint16
+
+const (
+	CapabilityWindow Capability = 1 << iota
+	CapabilityCallbacks
+	CapabilityPreflight
+	CapabilityTimer
+	CapabilityBlockedState
+	CapabilityBurst
+	CapabilityConcurrency
+)
+
+func (c Capability) HasAll(required Capability) bool {
+	return c&required == required
+}
+
 // Definition is an opaque rate-limiter composition. Public callers construct
 // values through one of the profile packages.
 type Definition struct {
@@ -56,16 +72,31 @@ func ResolverOf(d Definition) any {
 	return d.resolver
 }
 
+func Capabilities(d Definition) Capability {
+	switch d.kind {
+	case MinimalKind:
+		return CapabilityWindow
+	case PreflightKind:
+		return CapabilityWindow | CapabilityCallbacks | CapabilityPreflight | CapabilityTimer
+	case DecisionsKind:
+		return CapabilityWindow | CapabilityCallbacks | CapabilityBlockedState
+	case LifecycleKind:
+		return CapabilityWindow | CapabilityCallbacks | CapabilityPreflight | CapabilityTimer | CapabilityBlockedState
+	default:
+		return 0
+	}
+}
+
 func Publishes(d Definition) bool {
-	return d.kind != MinimalKind
+	return Capabilities(d).HasAll(CapabilityCallbacks)
 }
 
 func UsesBlockedKey(d Definition) bool {
-	return d.kind == DecisionsKind || d.kind == LifecycleKind
+	return Capabilities(d).HasAll(CapabilityBlockedState)
 }
 
 func SupportsPreflight(d Definition) bool {
-	return d.kind == PreflightKind || d.kind == LifecycleKind
+	return Capabilities(d).HasAll(CapabilityPreflight)
 }
 
 func FunctionName(d Definition) string {
