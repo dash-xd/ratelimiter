@@ -49,8 +49,7 @@ func Render(libraryName string, registrations ...Registration) (string, error) {
 	}
 
 	source := strings.Replace(template, libraryNameMarker, libraryName, 1)
-	return strings.Replace(source, registrationMarker, strings.Join(lines, "
-"), 1), nil
+	return strings.Replace(source, registrationMarker, strings.Join(lines, "\n"), 1), nil
 }
 
 func isIdentifier(value string) bool {
