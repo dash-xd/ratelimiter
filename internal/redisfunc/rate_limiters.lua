@@ -470,7 +470,7 @@ local function timer_cancel(keys, args)
 
     local removed = redis.call("ZREM", timer_key, TIMER_MEMBER)
     redis.call("HDEL", payload_key, TIMER_MEMBER)
-    return removed
+    return {removed}
 end
 
 local function rate_limit_minimal(keys, args)

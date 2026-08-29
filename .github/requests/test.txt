@@ -1,2 +1,2 @@
 # Push pseudo-dispatch for the preflight-lifecycle test workflow.
-run=preflight-timer-cancel-v1
+run=preflight-timer-cancel-v2
