@@ -191,6 +191,16 @@ var DataCommands = []string{
 	"+multi", "+exec", "+discard", "+watch", "+unwatch",
 }
 
+
+// FunctionRuntimeCommands are the non-administrative Redis commands used by the
+// ratelimiter's registered functions in addition to ordinary tenant data and
+// Pub/Sub operations. Keep this list explicit so FCALL does not imply a broad
+// command category grant.
+var FunctionRuntimeCommands = []string{
+	"+time",
+	"+zremrangebyscore",
+}
+
 func (p *RedisACLProvider) Rules(spec UserSpec) ([]string, error) {
 	if p == nil {
 		return nil, errors.New("auth provider is nil")
@@ -232,6 +242,7 @@ func (p *RedisACLProvider) Rules(spec UserSpec) ([]string, error) {
 	}
 	if spec.Policy.Has(CapabilityFunctions) {
 		rules = append(rules, "+fcall", "+fcall_ro")
+		rules = append(rules, FunctionRuntimeCommands...)
 	}
 
 	return rules, nil
