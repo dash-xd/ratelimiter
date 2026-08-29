@@ -132,3 +132,92 @@ func TestPreflightTimerDispatchesShutdownThroughLogmaServerless(t *testing.T) {
 		t.Fatal("logma-serverless shutdown subscriber did not stop")
 	}
 }
+
+
+func TestPreflightTimerCanBeCancelled(t *testing.T) {
+	ctx, commands := integrationRedis(t)
+	if err := commands.FlushDB(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	const channel = "serverless:shutdown:cancel"
+	subCtx, stopSubscriber := context.WithCancel(ctx)
+	defer stopSubscriber()
+
+	subscribers := redis.NewClient(&redis.Options{Addr: os.Getenv("RATELIMITER_REDIS_ADDR")})
+	defer subscribers.Close()
+
+	signals := make(chan string, 1)
+	sub := logmapubsub.Subscribe(subCtx, subscribers, channel, func(payload string) {
+		signals <- payload
+	})
+	waitForSubscribers(t, ctx, commands, []string{channel})
+
+	resolver := ratelimiter.StaticTargets(map[ratelimiter.Stage][]ratelimiter.Target{
+		ratelimiter.StageShutdown: {{
+			Channel: channel,
+			Purpose: ratelimiter.PurposeLifecycleControl,
+		}},
+	})
+	profile := preflightprofile.New(resolver)
+	store, err := ratelimiter.NewRedisStore(commands, ratelimiter.RedisConfig{
+		Keyspace: "test:timer:cancel",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Bootstrap(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	limiter, err := store.Limiter(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in := lifecycleInput("timer-cancel", "tenant-timer:worker-cancel")
+	in.Preflight = ratelimiter.PreflightOptions{
+		Shutdown: ratelimiter.ShutdownConditions{
+			Timer: &ratelimiter.TimerCondition{After: 100 * time.Millisecond},
+		},
+	}
+	if _, err := limiter.Check(ctx, in, ratelimiter.Limit{MaxRequests: 10, Window: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := limiter.CancelTimer(ctx, in.Bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removed {
+		t.Fatal("expected armed timer to be removed")
+	}
+	removed, err = limiter.CancelTimer(ctx, in.Bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed {
+		t.Fatal("expected repeated timer cancel to be idempotent")
+	}
+
+	time.Sleep(120 * time.Millisecond)
+	result, err := limiter.Tick(ctx, in.Bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Dispatched != 0 || result.Pending != 0 {
+		t.Fatalf("cancelled timer was still due: %#v", result)
+	}
+
+	select {
+	case payload := <-signals:
+		t.Fatalf("cancelled timer emitted shutdown: %s", payload)
+	default:
+	}
+
+	stopSubscriber()
+	select {
+	case <-sub.Stopped():
+	case <-time.After(2 * time.Second):
+		t.Fatal("logma-serverless shutdown subscriber did not stop")
+	}
+}

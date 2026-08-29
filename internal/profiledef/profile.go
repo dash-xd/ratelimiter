@@ -94,6 +94,17 @@ func TimerTickFunctionName(d Definition) string {
 	}
 }
 
+func TimerCancelFunctionName(d Definition) string {
+	switch d.kind {
+	case PreflightKind:
+		return "dashxd_ratelimit_preflight_timer_cancel_v1"
+	case LifecycleKind:
+		return "dashxd_ratelimit_lifecycle_timer_cancel_v1"
+	default:
+		return ""
+	}
+}
+
 func LibraryName(d Definition) string {
 	if d.kind == "" {
 		return ""

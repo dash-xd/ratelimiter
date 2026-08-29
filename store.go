@@ -71,10 +71,17 @@ func (s *RedisStore) Bootstrap(ctx context.Context, profiles ...Profile) error {
 			WrapperName:  profiledef.LuaWrapperName(profile),
 		}}
 		if profiledef.SupportsPreflight(profile) {
-			registrations = append(registrations, redisfunc.Registration{
-				FunctionName: profiledef.TimerTickFunctionName(profile),
-				WrapperName:  "timer_tick",
-			})
+			registrations = append(
+				registrations,
+				redisfunc.Registration{
+					FunctionName: profiledef.TimerTickFunctionName(profile),
+					WrapperName:  "timer_tick",
+				},
+				redisfunc.Registration{
+					FunctionName: profiledef.TimerCancelFunctionName(profile),
+					WrapperName:  "timer_cancel",
+				},
+			)
 		}
 
 		source, err := redisfunc.Render(libraryName, registrations...)

@@ -458,6 +458,21 @@ local function timer_tick(keys, args)
     return {dispatched, pending, publish_failures, current_time_ms}
 end
 
+local function timer_cancel(keys, args)
+    if #keys ~= 2 then
+        error("timer cancel requires timer and payload keys")
+    end
+
+    local timer_key = keys[1]
+    local payload_key = keys[2]
+    require_key_type(timer_key, "zset")
+    require_key_type(payload_key, "hash")
+
+    local removed = redis.call("ZREM", timer_key, TIMER_MEMBER)
+    redis.call("HDEL", payload_key, TIMER_MEMBER)
+    return removed
+end
+
 local function rate_limit_minimal(keys, args)
     return execute(keys, args, "minimal")
 end

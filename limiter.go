@@ -108,6 +108,40 @@ func (l *Limiter) Tick(ctx context.Context, bucket string) (TickResult, error) {
 	return decodeTickResult(values)
 }
 
+// CancelTimer removes an armed shutdown timer and its retained callback context.
+func (l *Limiter) CancelTimer(ctx context.Context, bucket string) (bool, error) {
+	if l == nil || l.store == nil || l.store.store == nil {
+		return false, fmt.Errorf("limiter is not initialized")
+	}
+	if !profiledef.SupportsPreflight(l.profile) {
+		return false, fmt.Errorf(
+			"%s profile does not support preflight lifecycle conditions",
+			profiledef.KindOf(l.profile),
+		)
+	}
+	if err := (Input{Bucket: bucket}).validate(); err != nil {
+		return false, fmt.Errorf("validate bucket: %w", err)
+	}
+
+	timerKey, payloadKey := l.store.store.LifecycleKeys(bucket)
+	values, err := l.store.store.Call(
+		ctx,
+		profiledef.TimerCancelFunctionName(l.profile),
+		[]string{timerKey, payloadKey},
+	)
+	if err != nil {
+		return false, err
+	}
+	if len(values) != 1 {
+		return false, fmt.Errorf("unexpected lifecycle timer cancel response length %d", len(values))
+	}
+	removed, ok := values[0].(int64)
+	if !ok {
+		return false, fmt.Errorf("unexpected timer cancel response type %T", values[0])
+	}
+	return removed == 1, nil
+}
+
 func decodeDecision(values []any) (Decision, error) {
 	if len(values) != 7 {
 		return Decision{}, fmt.Errorf("unexpected rate limiter response length %d", len(values))
