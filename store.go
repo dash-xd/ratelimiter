@@ -66,11 +66,18 @@ func (s *RedisStore) Bootstrap(ctx context.Context, profiles ...Profile) error {
 		}
 		seen[libraryName] = struct{}{}
 
-		source, err := redisfunc.Render(
-			libraryName,
-			profiledef.FunctionName(profile),
-			profiledef.LuaWrapperName(profile),
-		)
+		registrations := []redisfunc.Registration{{
+			FunctionName: profiledef.FunctionName(profile),
+			WrapperName:  profiledef.LuaWrapperName(profile),
+		}}
+		if profiledef.SupportsPreflight(profile) {
+			registrations = append(registrations, redisfunc.Registration{
+				FunctionName: profiledef.TimerTickFunctionName(profile),
+				WrapperName:  "timer_tick",
+			})
+		}
+
+		source, err := redisfunc.Render(libraryName, registrations...)
 		if err != nil {
 			return fmt.Errorf("render %s: %w", libraryName, err)
 		}

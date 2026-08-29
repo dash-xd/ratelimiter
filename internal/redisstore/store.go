@@ -71,6 +71,12 @@ func (s *Store) Keys(bucket string) (windowKey, blockedKey string) {
 	return s.keyspace + ":" + tag + ":window", s.keyspace + ":" + tag + ":blocked"
 }
 
+func (s *Store) LifecycleKeys(bucket string) (timerKey, payloadKey string) {
+	tag := "{" + bucket + "}"
+	return s.keyspace + ":" + tag + ":lifecycle:timers",
+		s.keyspace + ":" + tag + ":lifecycle:payloads"
+}
+
 func (s *Store) LoadFunction(ctx context.Context, libraryName, source string) error {
 	if err := s.client.Do(ctx, "FUNCTION", "LOAD", "REPLACE", source).Err(); err != nil {
 		return fmt.Errorf("load %s: %w", libraryName, err)

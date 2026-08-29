@@ -64,6 +64,10 @@ func UsesBlockedKey(d Definition) bool {
 	return d.kind == DecisionsKind || d.kind == LifecycleKind
 }
 
+func SupportsPreflight(d Definition) bool {
+	return d.kind == PreflightKind || d.kind == LifecycleKind
+}
+
 func FunctionName(d Definition) string {
 	switch d.kind {
 	case MinimalKind:
@@ -74,6 +78,17 @@ func FunctionName(d Definition) string {
 		return "dashxd_ratelimit_decisions_v1"
 	case LifecycleKind:
 		return "dashxd_ratelimit_lifecycle_v1"
+	default:
+		return ""
+	}
+}
+
+func TimerTickFunctionName(d Definition) string {
+	switch d.kind {
+	case PreflightKind:
+		return "dashxd_ratelimit_preflight_timer_tick_v1"
+	case LifecycleKind:
+		return "dashxd_ratelimit_lifecycle_timer_tick_v1"
 	default:
 		return ""
 	}

@@ -56,6 +56,16 @@ func TestInputAndLimitValidation(t *testing.T) {
 	if err := (Input{Bucket: "bad{tag}"}).validate(); err == nil {
 		t.Fatal("expected hash-tag braces to be rejected")
 	}
+	if err := (Input{
+		Bucket: "timer",
+		Preflight: PreflightOptions{
+			Shutdown: ShutdownConditions{
+				Timer: &TimerCondition{After: 500 * time.Microsecond},
+			},
+		},
+	}).validate(); err == nil {
+		t.Fatal("expected sub-millisecond preflight timer to be rejected")
+	}
 	if err := (Limit{MaxRequests: 1, Window: 500 * time.Microsecond}).validate(); err == nil {
 		t.Fatal("expected sub-millisecond window to be rejected")
 	}

@@ -7,7 +7,10 @@ import (
 	"github.com/dash-xd/ratelimiter/internal/profiledef"
 )
 
-const EventSchema = "dashxd.ratelimiter.event.v1"
+const (
+	EventSchema           = "dashxd.ratelimiter.event.v1"
+	LifecycleSignalSchema = "dashxd.ratelimiter.lifecycle.v1"
+)
 
 // PubSubMessage is the Logma-compatible outer Pub/Sub envelope. Stateful Logma
 // subscriptions decode and forward this shape while Message retains the stable
@@ -19,6 +22,34 @@ type PubSubMessage struct {
 	ParentNamespace string `json:"parentNamespace,omitempty"`
 	ChildNamespace  string `json:"childNamespace,omitempty"`
 	Channel         string `json:"channel"`
+}
+
+// LifecycleSignalMessage uses the same Logma-compatible envelope for lifecycle
+// control signals emitted by Redis-owned preflight conditions.
+type LifecycleSignalMessage struct {
+	Type            string          `json:"type"`
+	SentTimeUTC     int64           `json:"sentTimeUtc"`
+	Message         LifecycleSignal `json:"message"`
+	ParentNamespace string          `json:"parentNamespace,omitempty"`
+	ChildNamespace  string          `json:"childNamespace,omitempty"`
+	Channel         string          `json:"channel"`
+}
+
+// LifecycleSignal is a generic control-plane signal. Timer uses DeadlineUnixMS;
+// future count/byte conditions can use Limit and Observed without changing the
+// outer dispatch contract.
+type LifecycleSignal struct {
+	Schema         string        `json:"schema"`
+	Type           string        `json:"type"`
+	Signal         string        `json:"signal"`
+	Condition      string        `json:"condition"`
+	SentTimeUnixMS int64         `json:"sent_time_unix_ms"`
+	DeadlineUnixMS int64         `json:"deadline_unix_ms,omitempty"`
+	Limit          int64         `json:"limit,omitempty"`
+	Observed       int64         `json:"observed,omitempty"`
+	Bucket         string        `json:"bucket"`
+	Request        Request       `json:"request"`
+	Callback       EventCallback `json:"callback"`
 }
 
 // Event is the stable rate-limiter event carried inside PubSubMessage.Message.
@@ -128,11 +159,11 @@ func buildEventContext(profile Profile, in Input) ([]byte, error) {
 func stagesForProfile(kind profiledef.Kind) []Stage {
 	switch kind {
 	case profiledef.PreflightKind:
-		return []Stage{StagePreflight}
+		return []Stage{StagePreflight, StageShutdown}
 	case profiledef.DecisionsKind:
 		return []Stage{StageAllowed, StageBlocked}
 	case profiledef.LifecycleKind:
-		return []Stage{StagePreflight, StageAllowed, StageBlocked}
+		return []Stage{StagePreflight, StageAllowed, StageBlocked, StageShutdown}
 	default:
 		return nil
 	}

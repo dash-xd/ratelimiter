@@ -34,6 +34,12 @@ func (l *Limiter) Check(ctx context.Context, in Input, limit Limit) (Decision, e
 	if err := limit.validate(); err != nil {
 		return Decision{}, fmt.Errorf("validate limit: %w", err)
 	}
+	if in.Preflight.hasConditions() && !profiledef.SupportsPreflight(l.profile) {
+		return Decision{}, fmt.Errorf(
+			"%s profile does not support preflight lifecycle conditions",
+			profiledef.KindOf(l.profile),
+		)
+	}
 
 	windowKey, blockedKey := l.store.store.Keys(in.Bucket)
 	keys := []string{windowKey}
@@ -47,7 +53,23 @@ func (l *Limiter) Check(ctx context.Context, in Input, limit Limit) (Decision, e
 		if profiledef.UsesBlockedKey(l.profile) {
 			keys = append(keys, blockedKey)
 		}
+		if profiledef.SupportsPreflight(l.profile) {
+			timerKey, payloadKey := l.store.store.LifecycleKeys(in.Bucket)
+			keys = append(keys, timerKey, payloadKey)
+		}
+
 		args = append(args, string(ctxJSON))
+		if profiledef.SupportsPreflight(l.profile) {
+			var timerAfterMS int64
+			var timerReset int64
+			if timer := in.Preflight.Shutdown.Timer; timer != nil {
+				timerAfterMS = timer.After.Milliseconds()
+				if timer.Reset {
+					timerReset = 1
+				}
+			}
+			args = append(args, timerAfterMS, timerReset)
+		}
 	}
 
 	values, err := l.store.store.Call(ctx, profiledef.FunctionName(l.profile), keys, args...)
@@ -55,6 +77,35 @@ func (l *Limiter) Check(ctx context.Context, in Input, limit Limit) (Decision, e
 		return Decision{}, err
 	}
 	return decodeDecision(values)
+}
+
+// Tick performs one bounded evaluation of the Redis-owned preflight lifecycle
+// conditions for bucket. Callers provide the clock pulse; Redis owns the
+// deadline, condition state, and shutdown dispatch decision.
+func (l *Limiter) Tick(ctx context.Context, bucket string) (TickResult, error) {
+	if l == nil || l.store == nil || l.store.store == nil {
+		return TickResult{}, fmt.Errorf("limiter is not initialized")
+	}
+	if !profiledef.SupportsPreflight(l.profile) {
+		return TickResult{}, fmt.Errorf(
+			"%s profile does not support preflight lifecycle conditions",
+			profiledef.KindOf(l.profile),
+		)
+	}
+	if err := (Input{Bucket: bucket}).validate(); err != nil {
+		return TickResult{}, fmt.Errorf("validate bucket: %w", err)
+	}
+
+	timerKey, payloadKey := l.store.store.LifecycleKeys(bucket)
+	values, err := l.store.store.Call(
+		ctx,
+		profiledef.TimerTickFunctionName(l.profile),
+		[]string{timerKey, payloadKey},
+	)
+	if err != nil {
+		return TickResult{}, err
+	}
+	return decodeTickResult(values)
 }
 
 func decodeDecision(values []any) (Decision, error) {
@@ -79,5 +130,27 @@ func decodeDecision(values []any) (Decision, error) {
 		ObservedAt:      time.UnixMilli(ints[4]).UTC(),
 		BlockedCount:    ints[5],
 		PublishFailures: ints[6],
+	}, nil
+}
+
+func decodeTickResult(values []any) (TickResult, error) {
+	if len(values) != 4 {
+		return TickResult{}, fmt.Errorf("unexpected lifecycle tick response length %d", len(values))
+	}
+
+	ints := make([]int64, len(values))
+	for i, value := range values {
+		v, ok := value.(int64)
+		if !ok {
+			return TickResult{}, fmt.Errorf("unexpected tick response value %d type %T", i, value)
+		}
+		ints[i] = v
+	}
+
+	return TickResult{
+		Dispatched:      ints[0],
+		Pending:         ints[1],
+		PublishFailures: ints[2],
+		ObservedAt:      time.UnixMilli(ints[3]).UTC(),
 	}, nil
 }

@@ -1,6 +1,9 @@
 #!lua name=__RATELIMITER_LIBRARY_NAME__
 
 local EVENT_SCHEMA = "dashxd.ratelimiter.event.v1"
+local LIFECYCLE_SIGNAL_SCHEMA = "dashxd.ratelimiter.lifecycle.v1"
+local TIMER_MEMBER = "shutdown:timer"
+local MAX_TIMER_BATCH = 16
 local MAX_CONTEXT_BYTES = 16384
 local MAX_TARGETS_PER_STAGE = 8
 local MAX_CHANNEL_BYTES = 256
@@ -14,6 +17,37 @@ local function require_positive_integer(value, name)
         error(name .. " must be a positive integer")
     end
     return number
+end
+
+local function require_nonnegative_integer(value, name)
+    local number = tonumber(value)
+    if not number or number < 0 or number ~= math.floor(number) then
+        error(name .. " must be a non-negative integer")
+    end
+    return number
+end
+
+local function require_boolean_integer(value, name)
+    local number = tonumber(value)
+    if number ~= 0 and number ~= 1 then
+        error(name .. " must be 0 or 1")
+    end
+    return number == 1
+end
+
+local function key_type(key)
+    local reply = redis.call("TYPE", key)
+    if type(reply) == "table" then
+        return reply.ok
+    end
+    return reply
+end
+
+local function require_key_type(key, expected)
+    local actual = key_type(key)
+    if actual ~= "none" and actual ~= expected then
+        error("key " .. key .. " must be " .. expected .. ", got " .. tostring(actual))
+    end
 end
 
 local function now()
@@ -56,7 +90,7 @@ local function validate_targets(targets)
         error("targets must be an object")
     end
 
-    for _, stage in ipairs({"preflight", "allowed", "blocked"}) do
+    for _, stage in ipairs({"preflight", "allowed", "blocked", "shutdown"}) do
         local stage_targets = targets[stage]
         if stage_targets ~= nil then
             if type(stage_targets) ~= "table" or #stage_targets > MAX_TARGETS_PER_STAGE then
@@ -136,6 +170,53 @@ local function publish_stage(context, stage, now_ms, rate_limit)
     return failures
 end
 
+local function publish_shutdown(context, now_ms, deadline_ms)
+    local targets = context.targets and context.targets.shutdown
+    if not targets or #targets == 0 then
+        return false, 0
+    end
+
+    local namespace = context.request and context.request.namespace or {}
+    local all_delivered = true
+    local failures = 0
+
+    for _, target in ipairs(targets) do
+        local signal = {
+            schema = LIFECYCLE_SIGNAL_SCHEMA,
+            type = "lifecycle.shutdown",
+            signal = "shutdown",
+            condition = "timer",
+            sent_time_unix_ms = now_ms,
+            deadline_unix_ms = deadline_ms,
+            bucket = context.bucket,
+            request = context.request or {},
+            callback = {
+                purpose = target.purpose,
+                data = target.data or {}
+            }
+        }
+
+        local message = {
+            type = "Signal",
+            sentTimeUtc = now_ms,
+            message = signal,
+            parentNamespace = namespace.parent or "",
+            childNamespace = namespace.child or "",
+            channel = target.channel
+        }
+
+        local reply = redis.pcall("PUBLISH", target.channel, cjson.encode(message))
+        if type(reply) == "table" and reply.err then
+            all_delivered = false
+            failures = failures + 1
+        elseif tonumber(reply) == nil or tonumber(reply) < 1 then
+            all_delivered = false
+        end
+    end
+
+    return all_delivered, failures
+end
+
 local function decision_payload(context, max_requests, window_ms, decision, count, remaining, retry_after_ms, blocked_count)
     return {
         bucket = context.bucket,
@@ -158,10 +239,54 @@ local function preflight_payload(context, max_requests, window_ms)
     }
 end
 
+local function timer_keys(keys, mode)
+    if mode == "preflight" then
+        return keys[2], keys[3]
+    end
+    if mode == "lifecycle" then
+        return keys[3], keys[4]
+    end
+    return nil, nil
+end
+
+local function arm_timer(context, raw_context, timer_key, payload_key, after_ms, reset, now_ms)
+    if after_ms == 0 then
+        return
+    end
+
+    local targets = context.targets and context.targets.shutdown
+    if not targets or #targets == 0 then
+        error("preflight shutdown timer requires at least one shutdown target")
+    end
+
+    require_key_type(timer_key, "zset")
+    require_key_type(payload_key, "hash")
+
+    local deadline_ms = now_ms + after_ms
+    if reset then
+        redis.call("ZADD", timer_key, deadline_ms, TIMER_MEMBER)
+        redis.call("HSET", payload_key, TIMER_MEMBER, raw_context)
+        return
+    end
+
+    local added = redis.call("ZADD", timer_key, "NX", deadline_ms, TIMER_MEMBER)
+    if added == 1 or redis.call("HEXISTS", payload_key, TIMER_MEMBER) == 0 then
+        redis.call("HSET", payload_key, TIMER_MEMBER, raw_context)
+    end
+end
+
 local function execute(keys, args, mode)
     local publishes = mode ~= "minimal"
     local tracks_blocked = mode == "decisions" or mode == "lifecycle"
-    local expected_keys = tracks_blocked and 2 or 1
+    local supports_preflight = mode == "preflight" or mode == "lifecycle"
+
+    local expected_keys = 1
+    if tracks_blocked then
+        expected_keys = expected_keys + 1
+    end
+    if supports_preflight then
+        expected_keys = expected_keys + 2
+    end
     if #keys < expected_keys then
         error("rate limiter received too few keys")
     end
@@ -170,15 +295,46 @@ local function execute(keys, args, mode)
     local window_ms = require_positive_integer(args[2], "window_ms")
     local window_seconds = window_ms / 1000
     local context = nil
+    local raw_context = nil
+    local timer_after_ms = 0
+    local timer_reset = false
 
     if publishes then
-        context = decode_context(args[3])
+        raw_context = args[3]
+        context = decode_context(raw_context)
+    end
+    if supports_preflight then
+        timer_after_ms = require_nonnegative_integer(args[4], "timer_after_ms")
+        timer_reset = require_boolean_integer(args[5], "timer_reset")
     end
 
     local key = keys[1]
     local blocked_key = tracks_blocked and keys[2] or nil
+    local timer_key, payload_key = timer_keys(keys, mode)
+
+    require_key_type(key, "zset")
+    if blocked_key then
+        require_key_type(blocked_key, "string")
+    end
+    if supports_preflight then
+        require_key_type(timer_key, "zset")
+        require_key_type(payload_key, "hash")
+    end
+
     local seconds, microseconds, current_time, current_time_ms = now()
     local publish_failures = 0
+
+    if supports_preflight then
+        arm_timer(
+            context,
+            raw_context,
+            timer_key,
+            payload_key,
+            timer_after_ms,
+            timer_reset,
+            current_time_ms
+        )
+    end
 
     if mode == "preflight" or mode == "lifecycle" then
         publish_failures = publish_failures + publish_stage(
@@ -239,6 +395,67 @@ local function execute(keys, args, mode)
     end
 
     return {0, count, remaining, 0, current_time_ms, blocked_count, publish_failures}
+end
+
+local function timer_tick(keys, args)
+    if #keys ~= 2 then
+        error("timer tick requires timer and payload keys")
+    end
+
+    local timer_key = keys[1]
+    local payload_key = keys[2]
+    require_key_type(timer_key, "zset")
+    require_key_type(payload_key, "hash")
+
+    local _, _, _, current_time_ms = now()
+    local due = redis.call(
+        "ZRANGEBYSCORE",
+        timer_key,
+        "-inf",
+        current_time_ms,
+        "WITHSCORES",
+        "LIMIT",
+        0,
+        MAX_TIMER_BATCH
+    )
+
+    local dispatched = 0
+    local pending = 0
+    local publish_failures = 0
+
+    for i = 1, #due, 2 do
+        local member = due[i]
+        local deadline_ms = tonumber(due[i + 1])
+        local raw_context = redis.call("HGET", payload_key, member)
+
+        if not raw_context then
+            pending = pending + 1
+            publish_failures = publish_failures + 1
+        else
+            local ok, context = pcall(decode_context, raw_context)
+            if not ok then
+                pending = pending + 1
+                publish_failures = publish_failures + 1
+            else
+                local delivered, failures = publish_shutdown(
+                    context,
+                    current_time_ms,
+                    deadline_ms
+                )
+                publish_failures = publish_failures + failures
+
+                if delivered then
+                    redis.call("ZREM", timer_key, member)
+                    redis.call("HDEL", payload_key, member)
+                    dispatched = dispatched + 1
+                else
+                    pending = pending + 1
+                end
+            end
+        end
+    end
+
+    return {dispatched, pending, publish_failures, current_time_ms}
 end
 
 local function rate_limit_minimal(keys, args)

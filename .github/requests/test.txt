@@ -1,0 +1,2 @@
+# Push pseudo-dispatch for the preflight-lifecycle test workflow.
+run=preflight-timer-v1

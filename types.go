@@ -25,6 +25,7 @@ const (
 	StagePreflight Stage = "preflight"
 	StageAllowed   Stage = "allowed"
 	StageBlocked   Stage = "blocked"
+	StageShutdown  Stage = "shutdown"
 )
 
 // Purpose describes the intended non-authoritative use of a Pub/Sub callback.
@@ -33,14 +34,15 @@ const (
 type Purpose string
 
 const (
-	PurposeMetrics        Purpose = "metrics"
-	PurposeLogs           Purpose = "logs"
-	PurposeCacheWarm      Purpose = "cache_warm"
-	PurposeAnomaly        Purpose = "anomaly_analysis"
-	PurposeAdaptivePolicy Purpose = "adaptive_policy"
-	PurposeTracing        Purpose = "tracing"
-	PurposeSpeculative    Purpose = "speculative_work"
-	PurposeRequestShadow  Purpose = "request_shadow"
+	PurposeMetrics          Purpose = "metrics"
+	PurposeLogs             Purpose = "logs"
+	PurposeCacheWarm        Purpose = "cache_warm"
+	PurposeAnomaly          Purpose = "anomaly_analysis"
+	PurposeAdaptivePolicy   Purpose = "adaptive_policy"
+	PurposeTracing          Purpose = "tracing"
+	PurposeSpeculative      Purpose = "speculative_work"
+	PurposeRequestShadow    Purpose = "request_shadow"
+	PurposeLifecycleControl Purpose = "lifecycle_control"
 )
 
 // Metadata is deliberately string-to-string. Keeping callback metadata flat
@@ -65,6 +67,28 @@ type Request struct {
 	Namespace Namespace `json:"namespace,omitempty"`
 }
 
+// TimerCondition arms a Redis-owned shutdown deadline during preflight.
+//
+// By default an already-armed timer is left unchanged, so repeated preflight
+// calls cannot extend a workload's lifetime. Set Reset to explicitly replace
+// the existing deadline and shutdown context.
+type TimerCondition struct {
+	After time.Duration
+	Reset bool
+}
+
+// ShutdownConditions contains the conditions that can emit a lifecycle shutdown
+// signal. Timer is the first condition; additional counters can be added here
+// without changing the lifecycle dispatch path.
+type ShutdownConditions struct {
+	Timer *TimerCondition
+}
+
+// PreflightOptions controls lifecycle work performed at the preflight stage.
+type PreflightOptions struct {
+	Shutdown ShutdownConditions
+}
+
 // Input is the normalized unit passed to the limiter.
 type Input struct {
 	// Bucket identifies the sliding-window bucket and is the only required field.
@@ -77,6 +101,10 @@ type Input struct {
 	// win on duplicate keys, allowing per-request enrichment without rebuilding a
 	// static profile.
 	CallbackData Metadata
+
+	// Preflight optionally arms Redis-owned lifecycle conditions. Conditions are
+	// supported by the preflight and lifecycle profiles.
+	Preflight PreflightOptions
 }
 
 // Limit controls the exact rolling window.
@@ -96,6 +124,15 @@ type Decision struct {
 	ObservedAt      time.Time
 	BlockedCount    int64
 	PublishFailures int64
+}
+
+// TickResult describes one bounded evaluation of Redis-owned preflight
+// lifecycle conditions for a bucket.
+type TickResult struct {
+	Dispatched      int64
+	Pending         int64
+	PublishFailures int64
+	ObservedAt      time.Time
 }
 
 var ErrRateLimited = errors.New("rate limit exceeded")
@@ -132,7 +169,24 @@ func (in Input) validate() error {
 	if strings.ContainsAny(in.Bucket, "{}") {
 		return errors.New("bucket must not contain Redis hash-tag braces")
 	}
-	return validateMetadata(in.CallbackData)
+	if err := validateMetadata(in.CallbackData); err != nil {
+		return err
+	}
+	return in.Preflight.validate()
+}
+
+func (p PreflightOptions) validate() error {
+	if p.Shutdown.Timer == nil {
+		return nil
+	}
+	if p.Shutdown.Timer.After < time.Millisecond {
+		return errors.New("preflight shutdown timer must be at least 1ms")
+	}
+	return nil
+}
+
+func (p PreflightOptions) hasConditions() bool {
+	return p.Shutdown.Timer != nil
 }
 
 func validateMetadata(data Metadata) error {
