@@ -1,0 +1,113 @@
+name: test
+
+on:
+  push:
+    branches:
+      - preflight-lifecycle
+      - codex/auth-provider
+    paths:
+      - ".github/requests/test.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout ratelimiter
+        uses: actions/checkout@v7
+
+      - name: Checkout sus-redis
+        uses: actions/checkout@v7
+        with:
+          repository: xd-dash/sus-redis
+          path: .deps/sus-redis
+
+      - name: Checkout logma-serverless tester
+        uses: actions/checkout@v7
+        with:
+          repository: xd-dash/logma-serverless
+          ref: claude/main
+          path: .deps/logma-serverless
+
+      - name: Checkout stateful Logma
+        uses: actions/checkout@v7
+        with:
+          repository: xd-dash/logma
+          ref: main
+          path: .deps/logma
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          cache: true
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Start 40MB Redis test instance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/sus-redis
+          tar -xzf .deps/sus-redis/redis-server.tar.gz -C /tmp/sus-redis
+          redis_server="$(find /tmp/sus-redis -type f -name redis-server | head -n 1)"
+
+          if [[ -n "$redis_server" ]]; then
+            chmod +x "$redis_server"
+          fi
+
+          if [[ -n "$redis_server" ]] && "$redis_server" --version >/dev/null 2>&1; then
+            "$redis_server" \
+              --bind 127.0.0.1 \
+              --port 6380 \
+              --save "" \
+              --appendonly no \
+              --maxmemory 40mb \
+              --maxmemory-policy noeviction \
+              --daemonize yes
+          else
+            docker run -d --rm --name ratelimiter-redis -p 6380:6379 redis:7-alpine \
+              redis-server --save "" --appendonly no --maxmemory 40mb --maxmemory-policy noeviction
+          fi
+
+          for _ in $(seq 1 100); do
+            if (echo > /dev/tcp/127.0.0.1/6380) >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.05
+          done
+          echo "Redis did not start" >&2
+          exit 1
+
+      - name: Start stateful Logma
+        shell: bash
+        env:
+          REDIS_URI: 127.0.0.1:6380
+          API_KEY: ratelimiter-test
+        run: |
+          set -euo pipefail
+          cd .deps/logma
+          nohup go run ./cmd/api 8081 >/tmp/ratelimiter-logma.log 2>&1 &
+          for _ in $(seq 1 120); do
+            if (echo > /dev/tcp/127.0.0.1/8081) >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.1
+          done
+          cat /tmp/ratelimiter-logma.log >&2 || true
+          echo "Logma did not start" >&2
+          exit 1
+
+      - name: Logma integrations
+        env:
+          RATELIMITER_REDIS_ADDR: 127.0.0.1:6380
+          RATELIMITER_LOGMA_URL: http://127.0.0.1:8081
+          RATELIMITER_LOGMA_API_KEY: ratelimiter-test
+        run: |
+          go mod edit -require=github.com/xd-dash/logma-serverless@v0.0.0
+          go mod edit -replace=github.com/xd-dash/logma-serverless=./.deps/logma-serverless
+          go test -mod=mod -tags=integration .
