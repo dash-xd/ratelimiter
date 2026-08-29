@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - preflight-lifecycle
+      - codex/auth-provider
     paths:
       - ".github/requests/test.txt"
   workflow_dispatch:
