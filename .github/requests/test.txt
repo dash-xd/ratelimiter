@@ -1,2 +1,3 @@
 # Push pseudo-dispatch for the preflight-lifecycle test workflow.
 run=policy-energy-v1
+auth-provider consolidation
