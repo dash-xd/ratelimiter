@@ -231,3 +231,24 @@ deadline evaluation and shutdown dispatch remain in the Redis Function.
 The timer member is named `shutdown:timer`. Future shutdown conditions such as
 quote counts or streamed-byte limits can use sibling members and the same
 lifecycle signal path without changing callers that consume shutdown signals.
+
+
+## Authentication providers
+
+Authentication/authorization providers are separate from rate-limiter execution
+profiles. Consumers may use ratelimiter without an auth provider.
+
+The managed Redis ACL provider is available from:
+
+```go
+import managedauth "github.com/dash-xd/ratelimiter/auth/profile/managed"
+```
+
+It compiles tenant-scoped Redis usernames, key patterns, Pub/Sub channel
+patterns, optional FCALL capability, and explicit command grants. It deliberately
+does not grant EVAL/EVALSHA, FUNCTION administration, ACL administration,
+KEYS/SCAN, FLUSH*, CONFIG, MODULE, or broad Redis command categories.
+
+This lets applications such as Logma use ratelimiter as the provider of the
+authorization scheme while retaining their own transport authentication and
+application-specific namespace configuration.
