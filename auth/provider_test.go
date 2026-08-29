@@ -59,6 +59,8 @@ func TestRedisACLProviderDoesNotGrantAdministration(t *testing.T) {
 		"+fcall_ro",
 		"+publish",
 		"+subscribe",
+		"+time",
+		"+zremrangebyscore",
 	} {
 		if !slices.Contains(rules, want) {
 			t.Fatalf("missing %q in %#v", want, rules)
