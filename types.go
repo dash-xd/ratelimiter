@@ -69,12 +69,18 @@ type Request struct {
 
 // TimerCondition arms a Redis-owned shutdown deadline during preflight.
 //
-// By default an already-armed timer is left unchanged, so repeated preflight
-// calls cannot extend a workload's lifetime. Set Reset to explicitly replace
-// the existing deadline and shutdown context.
+// Set exactly one of After or Deadline. After is convenient for ordinary
+// short-lived work. Deadline is the reconstruction-safe form for durable
+// lifecycle registrations: callers derive it from the original activation time
+// plus the encoded policy duration, so a Redis/host restart cannot extend the
+// lifecycle by rebasing the duration on the restart time.
+//
+// By default an already-armed timer is left unchanged. Set Reset to explicitly
+// replace the existing deadline and shutdown context.
 type TimerCondition struct {
-	After time.Duration
-	Reset bool
+	After    time.Duration
+	Deadline time.Time
+	Reset    bool
 }
 
 // ShutdownConditions contains the conditions that can emit a lifecycle shutdown
@@ -176,11 +182,23 @@ func (in Input) validate() error {
 }
 
 func (p PreflightOptions) validate() error {
-	if p.Shutdown.Timer == nil {
+	timer := p.Shutdown.Timer
+	if timer == nil {
 		return nil
 	}
-	if p.Shutdown.Timer.After < time.Millisecond {
-		return errors.New("preflight shutdown timer must be at least 1ms")
+	if timer.After != 0 && !timer.Deadline.IsZero() {
+		return errors.New("preflight shutdown timer must set only After or Deadline")
+	}
+	if timer.Deadline.IsZero() {
+		if timer.After < time.Millisecond {
+			return errors.New("preflight shutdown timer must be at least 1ms")
+		}
+		return nil
+	}
+	// Past absolute deadlines are valid during reconstruction; the next Tick
+	// should observe them as immediately due rather than extending the lifecycle.
+	if timer.Deadline.UnixMilli() <= 0 {
+		return errors.New("preflight shutdown deadline must be after the Unix epoch")
 	}
 	return nil
 }
