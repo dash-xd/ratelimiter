@@ -83,6 +83,10 @@ const (
 	Duration1H
 	Duration6H
 	Duration24H
+	Duration3D
+	Duration7D
+	Duration14D
+	Duration30D
 )
 
 func (c DurationClass) Duration() time.Duration {
@@ -109,13 +113,21 @@ func (c DurationClass) Duration() time.Duration {
 		return 6 * time.Hour
 	case Duration24H:
 		return 24 * time.Hour
+	case Duration3D:
+		return 3 * 24 * time.Hour
+	case Duration7D:
+		return 7 * 24 * time.Hour
+	case Duration14D:
+		return 14 * 24 * time.Hour
+	case Duration30D:
+		return 30 * 24 * time.Hour
 	default:
 		return 0
 	}
 }
 
 func DurationClassFor(duration time.Duration) (DurationClass, error) {
-	for class := DurationNone; class <= Duration24H; class++ {
+	for class := DurationNone; class <= Duration30D; class++ {
 		if class.Duration() == duration {
 			return class, nil
 		}
@@ -134,7 +146,7 @@ type PolicySpec struct {
 }
 
 func (p PolicySpec) Validate() error {
-	if p.Duration > Duration24H {
+	if p.Duration > Duration30D {
 		return fmt.Errorf("unknown duration class %d", p.Duration)
 	}
 	if p.Strategy > StrategyBurstFirst {
