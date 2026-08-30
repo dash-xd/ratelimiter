@@ -79,6 +79,53 @@ func (l *Limiter) Check(ctx context.Context, in Input, limit Limit) (Decision, e
 	return decodeDecision(values)
 }
 
+// ArmTimerAt reconstructs or initially registers a Redis-owned lifecycle timer
+// from an absolute deadline. The caller persists the original activation time
+// and policy code elsewhere; Redis owns the live deadline and due evaluation.
+// With reset=false, an already-armed timer keeps its existing deadline.
+func (l *Limiter) ArmTimerAt(
+	ctx context.Context,
+	in Input,
+	deadline time.Time,
+	reset bool,
+) (bool, error) {
+	if l == nil || l.store == nil || l.store.store == nil {
+		return false, fmt.Errorf("limiter is not initialized")
+	}
+	if !profiledef.SupportsPreflight(l.profile) {
+		return false, fmt.Errorf(
+			"%s profile does not support lifecycle timers",
+			profiledef.KindOf(l.profile),
+		)
+	}
+	if deadline.IsZero() {
+		return false, fmt.Errorf("lifecycle deadline is required")
+	}
+
+	// buildEventContext includes shutdown targets only when lifecycle conditions
+	// are present. A synthetic bounded condition marks this as lifecycle context;
+	// the absolute deadline below, not this duration, is what Redis stores.
+	contextInput := in
+	contextInput.Preflight.Shutdown.Timer = &TimerCondition{After: time.Millisecond}
+	if err := contextInput.validate(); err != nil {
+		return false, fmt.Errorf("validate input: %w", err)
+	}
+	ctxJSON, err := buildEventContext(l.profile, contextInput)
+	if err != nil {
+		return false, err
+	}
+
+	timerKey, payloadKey := l.store.store.LifecycleKeys(in.Bucket)
+	return l.store.store.ArmLifecycleTimerAbsolute(
+		ctx,
+		timerKey,
+		payloadKey,
+		string(ctxJSON),
+		deadline.UTC().UnixMilli(),
+		reset,
+	)
+}
+
 // Tick performs one bounded evaluation of the Redis-owned preflight lifecycle
 // conditions for bucket. Callers provide the clock pulse; Redis owns the
 // deadline, condition state, and shutdown dispatch decision.
