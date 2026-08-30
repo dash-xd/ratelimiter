@@ -1,2 +1,2 @@
-# Push pseudo-dispatch for the preflight-lifecycle test workflow.
-run=preflight-timer-cancel-v2
+# Push pseudo-dispatch for the codex/policy-energy test workflow.
+run=lifecycle-policy-retention-v1
