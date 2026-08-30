@@ -10,7 +10,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const DefaultKeyspace = "ratelimit"
+const (
+	DefaultKeyspace       = "ratelimit"
+	lifecycleTimerMember = "shutdown:timer"
+)
 
 type Store struct {
 	client   redis.UniversalClient
@@ -75,6 +78,87 @@ func (s *Store) LifecycleKeys(bucket string) (timerKey, payloadKey string) {
 	tag := "{" + bucket + "}"
 	return s.keyspace + ":" + tag + ":lifecycle:timers",
 		s.keyspace + ":" + tag + ":lifecycle:payloads"
+}
+
+// ArmLifecycleTimerAbsolute reconstructs the Redis-owned timer from an
+// externally durable absolute deadline. With reset=false, the first timer wins;
+// a later reconstruction cannot extend an already-armed lifecycle. If a prior
+// process died between ZADD and HSET, a later reconstruction repairs the missing
+// payload without changing the deadline.
+func (s *Store) ArmLifecycleTimerAbsolute(
+	ctx context.Context,
+	timerKey string,
+	payloadKey string,
+	rawContext string,
+	deadlineUnixMS int64,
+	reset bool,
+) (bool, error) {
+	if deadlineUnixMS <= 0 {
+		return false, errors.New("lifecycle deadline must be positive")
+	}
+	if rawContext == "" {
+		return false, errors.New("lifecycle context is required")
+	}
+
+	if reset {
+		if err := s.client.Do(
+			ctx,
+			"ZADD",
+			timerKey,
+			deadlineUnixMS,
+			lifecycleTimerMember,
+		).Err(); err != nil {
+			return false, fmt.Errorf("reset lifecycle timer: %w", err)
+		}
+		if err := s.client.HSet(
+			ctx,
+			payloadKey,
+			lifecycleTimerMember,
+			rawContext,
+		).Err(); err != nil {
+			return false, fmt.Errorf("reset lifecycle payload: %w", err)
+		}
+		return true, nil
+	}
+
+	added, err := s.client.Do(
+		ctx,
+		"ZADD",
+		timerKey,
+		"NX",
+		deadlineUnixMS,
+		lifecycleTimerMember,
+	).Int()
+	if err != nil {
+		return false, fmt.Errorf("arm lifecycle timer: %w", err)
+	}
+	if added == 1 {
+		if err := s.client.HSet(
+			ctx,
+			payloadKey,
+			lifecycleTimerMember,
+			rawContext,
+		).Err(); err != nil {
+			return false, fmt.Errorf("save lifecycle payload: %w", err)
+		}
+		return true, nil
+	}
+
+	exists, err := s.client.HExists(ctx, payloadKey, lifecycleTimerMember).Result()
+	if err != nil {
+		return false, fmt.Errorf("inspect lifecycle payload: %w", err)
+	}
+	if !exists {
+		if err := s.client.HSet(
+			ctx,
+			payloadKey,
+			lifecycleTimerMember,
+			rawContext,
+		).Err(); err != nil {
+			return false, fmt.Errorf("repair lifecycle payload: %w", err)
+		}
+	}
+	return false, nil
 }
 
 func (s *Store) LoadFunction(ctx context.Context, libraryName, source string) error {
