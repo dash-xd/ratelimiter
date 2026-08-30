@@ -61,14 +61,19 @@ func (l *Limiter) Check(ctx context.Context, in Input, limit Limit) (Decision, e
 		args = append(args, string(ctxJSON))
 		if profiledef.SupportsPreflight(l.profile) {
 			var timerAfterMS int64
+			var timerDeadlineMS int64
 			var timerReset int64
 			if timer := in.Preflight.Shutdown.Timer; timer != nil {
-				timerAfterMS = timer.After.Milliseconds()
+				if !timer.Deadline.IsZero() {
+					timerDeadlineMS = timer.Deadline.UTC().UnixMilli()
+				} else {
+					timerAfterMS = timer.After.Milliseconds()
+				}
 				if timer.Reset {
 					timerReset = 1
 				}
 			}
-			args = append(args, timerAfterMS, timerReset)
+			args = append(args, timerAfterMS, timerDeadlineMS, timerReset)
 		}
 	}
 
