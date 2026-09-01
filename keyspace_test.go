@@ -28,7 +28,9 @@ func TestWorkerKeyspaceRejectsAmbiguousSegments(t *testing.T) {
 		{name: "subsystem glob", scope: "dev", subsystem: "rate?limiter"},
 		{name: "resource class", scope: "dev", subsystem: "ratelimiter", resource: []string{"life[cycle]"}},
 		{name: "hash tag", scope: "dev", subsystem: "ratelimiter", resource: []string{"{shared}"}},
-		{name: "whitespace", scope: "dev", subsystem: "rate limiter"},
+		{name: "glob escape", scope: "dev", subsystem: "ratelimiter", resource: []string{`life\*cycle`}},
+		{name: "ascii whitespace", scope: "dev", subsystem: "rate limiter"},
+		{name: "unicode whitespace", scope: "dev", subsystem: "ratelimiter", resource: []string{"life\u00a0cycle"}},
 	}
 
 	for _, test := range tests {
