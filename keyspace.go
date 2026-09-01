@@ -19,11 +19,10 @@ var errInvalidKeyspaceSegment = errors.New("keyspace segment contains reserved R
 func WorkerKeyspace(scope, subsystem string, resource ...string) (string, error) {
 	parts := make([]string, 0, 2+len(resource))
 	for _, part := range append([]string{scope, subsystem}, resource...) {
-		part = strings.TrimSpace(part)
 		if part == "" {
 			return "", errors.New("keyspace segments must be non-empty")
 		}
-		if strings.ContainsAny(part, ":*?[]{} \t\r\n") {
+		if part != strings.TrimSpace(part) || strings.ContainsAny(part, ":*?[]{} \t\r\n") {
 			return "", errInvalidKeyspaceSegment
 		}
 		parts = append(parts, part)
