@@ -76,6 +76,11 @@ func (s *Store) Keys(bucket string) (windowKey, blockedKey string) {
 	return s.keyspace + ":" + tag + ":window", s.keyspace + ":" + tag + ":blocked"
 }
 
+func (s *Store) BurstKey(bucket string) string {
+	tag := "{" + bucket + "}"
+	return s.keyspace + ":" + tag + ":burst"
+}
+
 func (s *Store) LifecycleKeys(bucket string) (timerKey, payloadKey string) {
 	tag := "{" + bucket + "}"
 	return s.keyspace + ":" + tag + ":lifecycle:timers",
