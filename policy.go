@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	// PolicyVersion1 is retained only so persisted early-development policy codes
-	// can be decoded during the transition. New policies are always encoded as v2.
+	// PolicyVersion1 is retained only so early-development policy codes can be
+	// decoded during the transition. New policies are always encoded as v2.
 	PolicyVersion1 uint8 = 1
 	PolicyVersion2 uint8 = 2
 )
@@ -25,24 +25,22 @@ const (
 	FeatureBlockedState
 )
 
-// LimitID is an opaque wire identifier for a supported numeric limit. It is
-// deliberately not an ordinal and must never be compared numerically. The
-// descriptor registry is the source of truth for the actual value.
-type LimitID uint8
+// CountID is an opaque wire identifier for a supported bounded count. It is
+// used for burst capacity, publish totals, and concurrency ceilings. The ID is
+// identity only; numeric ordering comes from the descriptor value.
+type CountID uint8
 
-// ScaleClass is kept as a source-compatibility alias while downstream callers
-// migrate to LimitID. It no longer has exponent/mantissa semantics in v2.
-type ScaleClass = LimitID
+// LimitID and ScaleClass are migration aliases. V2 no longer has a generic
+// mathematical scale class; callers should prefer CountID for bounded counts.
+type LimitID = CountID
+type ScaleClass = CountID
 
-type limitDescriptor struct {
-	ID    LimitID
+type countDescriptor struct {
+	ID    CountID
 	Value uint64
 }
 
-// The v2 registry intentionally favors common operational values. Adding a new
-// value means appending a new stable ID; existing IDs never move. Ordering is
-// derived from Value, never from ID.
-var limitDescriptors = []limitDescriptor{
+var countDescriptors = []countDescriptor{
 	{0, 0},
 	{1, 1},
 	{2, 2},
@@ -83,40 +81,118 @@ var limitDescriptors = []limitDescriptor{
 	{37, 1000000},
 }
 
-func limitDescriptorFor(id LimitID) (limitDescriptor, bool) {
-	for _, descriptor := range limitDescriptors {
+func countDescriptorFor(id CountID) (countDescriptor, bool) {
+	for _, descriptor := range countDescriptors {
 		if descriptor.ID == id {
 			return descriptor, true
 		}
 	}
-	return limitDescriptor{}, false
+	return countDescriptor{}, false
 }
 
-func NewLimitID(value uint64) (LimitID, error) {
-	for _, descriptor := range limitDescriptors {
+func NewCountID(value uint64) (CountID, error) {
+	for _, descriptor := range countDescriptors {
 		if descriptor.Value == value {
 			return descriptor.ID, nil
 		}
 	}
-	return 0, fmt.Errorf("limit %d is not in the supported limit registry", value)
+	return 0, fmt.Errorf("count %d is not in the supported count registry", value)
 }
 
-// NewScaleClass is the compatibility spelling for NewLimitID.
-func NewScaleClass(value uint64) (ScaleClass, error) { return NewLimitID(value) }
+func NewLimitID(value uint64) (LimitID, error)       { return NewCountID(value) }
+func NewScaleClass(value uint64) (ScaleClass, error) { return NewCountID(value) }
 
-func (id LimitID) Value() uint64 {
-	descriptor, ok := limitDescriptorFor(id)
+func (id CountID) Value() uint64 {
+	descriptor, ok := countDescriptorFor(id)
 	if !ok {
 		return 0
 	}
 	return descriptor.Value
 }
 
-// DurationID is an opaque v2 wire identifier. v2 IDs are cleanly assigned in
+// RateID is an opaque wire identifier for a sustained requests-per-second
+// ceiling. It is intentionally a different type from CountID: a rate has units
+// and must not be compared to a burst capacity or total publish count.
+type RateID uint8
+
+type rateDescriptor struct {
+	ID                RateID
+	RequestsPerSecond uint64
+}
+
+// Rate IDs are independent protocol identities even where their numeric IDs
+// happen to match CountIDs today. New rates append new IDs; callers compare the
+// descriptor's RequestsPerSecond value, never the ID.
+var rateDescriptors = []rateDescriptor{
+	{0, 0},
+	{1, 1},
+	{2, 2},
+	{3, 3},
+	{4, 4},
+	{5, 5},
+	{6, 8},
+	{7, 10},
+	{8, 16},
+	{9, 20},
+	{10, 32},
+	{11, 50},
+	{12, 64},
+	{13, 100},
+	{14, 128},
+	{15, 200},
+	{16, 256},
+	{17, 500},
+	{18, 512},
+	{19, 1000},
+	{20, 1024},
+	{21, 2000},
+	{22, 4096},
+	{23, 5000},
+	{24, 8192},
+	{25, 10000},
+	{26, 16384},
+	{27, 20000},
+	{28, 32768},
+	{29, 50000},
+	{30, 65536},
+	{31, 100000},
+	{32, 131072},
+	{33, 250000},
+	{34, 262144},
+	{35, 500000},
+	{36, 524288},
+	{37, 1000000},
+}
+
+func rateDescriptorFor(id RateID) (rateDescriptor, bool) {
+	for _, descriptor := range rateDescriptors {
+		if descriptor.ID == id {
+			return descriptor, true
+		}
+	}
+	return rateDescriptor{}, false
+}
+
+func NewRateID(requestsPerSecond uint64) (RateID, error) {
+	for _, descriptor := range rateDescriptors {
+		if descriptor.RequestsPerSecond == requestsPerSecond {
+			return descriptor.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("rate %d requests/second is not in the supported rate registry", requestsPerSecond)
+}
+
+func (id RateID) RequestsPerSecond() uint64 {
+	descriptor, ok := rateDescriptorFor(id)
+	if !ok {
+		return 0
+	}
+	return descriptor.RequestsPerSecond
+}
+
+// DurationID is an opaque v2 wire identifier. IDs are cleanly assigned in
 // semantic order today, but callers must still compare Duration(), not IDs.
 type DurationID uint8
-
-// DurationClass is retained as a source-compatibility alias.
 type DurationClass = DurationID
 
 const (
@@ -190,44 +266,30 @@ func DurationIDFor(duration time.Duration) (DurationID, error) {
 
 func DurationClassFor(duration time.Duration) (DurationClass, error) { return DurationIDFor(duration) }
 
-// Strategy remains a policy hint, not a pricing algorithm. v2 does not derive
-// entitlements or pricing from Strategy.
-type Strategy uint8
-
-const (
-	StrategyFixed Strategy = iota
-	StrategyBalanced
-	StrategyRateFirst
-	StrategyDurationFirst
-	StrategyBurstFirst
-)
-
+// PolicySpec contains only machine-enforceable policy dimensions. Pricing tier
+// names and allocation strategies intentionally live outside the wire protocol.
 type PolicySpec struct {
-	Rate        LimitID
-	Burst       LimitID
-	Publishes   LimitID
+	Rate        RateID
+	Burst       CountID
+	Publishes   CountID
 	Duration    DurationID
-	Concurrency LimitID
-	Strategy    Strategy
+	Concurrency CountID
 	Features    PolicyFeature
 }
 
 func (p PolicySpec) Validate() error {
-	for name, id := range map[string]LimitID{
-		"rate": p.Rate, "burst": p.Burst, "publishes": p.Publishes, "concurrency": p.Concurrency,
+	if _, ok := rateDescriptorFor(p.Rate); !ok {
+		return fmt.Errorf("unknown rate id %d", p.Rate)
+	}
+	for name, id := range map[string]CountID{
+		"burst": p.Burst, "publishes": p.Publishes, "concurrency": p.Concurrency,
 	} {
-		if _, ok := limitDescriptorFor(id); !ok {
-			return fmt.Errorf("unknown %s limit id %d", name, id)
+		if _, ok := countDescriptorFor(id); !ok {
+			return fmt.Errorf("unknown %s count id %d", name, id)
 		}
 	}
 	if _, ok := durationDescriptorFor(p.Duration); !ok {
 		return fmt.Errorf("unknown duration id %d", p.Duration)
-	}
-	if p.Strategy > StrategyBurstFirst {
-		return fmt.Errorf("unknown strategy %d", p.Strategy)
-	}
-	if p.Features&^PolicyFeature(0x0fff) != 0 {
-		return errors.New("policy feature mask exceeds 12 bits")
 	}
 	return nil
 }
@@ -264,16 +326,15 @@ func (p PolicySpec) Requirements() Capability {
 	return required
 }
 
-// Entitlement is deliberately boring: it is an explicit security/pricing
-// boundary. A commercial plan may map to one entitlement and usage can be
-// billed independently; there is no synthetic "energy" currency in v2.
+// Entitlement is an explicit security/pricing boundary. A commercial plan may
+// map to an entitlement while usage accounting and billing remain independent.
 type Entitlement struct {
 	Features       PolicyFeature
-	MaxRate        LimitID
-	MaxBurst       LimitID
-	MaxPublishes   LimitID
+	MaxRate        RateID
+	MaxBurst       CountID
+	MaxPublishes   CountID
 	MaxDuration    DurationID
-	MaxConcurrency LimitID
+	MaxConcurrency CountID
 }
 
 func EntitlementFor(policy PolicySpec) Entitlement {
@@ -291,10 +352,13 @@ func (e Entitlement) Allows(policy PolicySpec) error {
 	if err := policy.Validate(); err != nil {
 		return err
 	}
-	for name, id := range map[string]LimitID{
-		"max rate": e.MaxRate, "max burst": e.MaxBurst, "max publishes": e.MaxPublishes, "max concurrency": e.MaxConcurrency,
+	if _, ok := rateDescriptorFor(e.MaxRate); !ok {
+		return fmt.Errorf("unknown entitlement max rate id %d", e.MaxRate)
+	}
+	for name, id := range map[string]CountID{
+		"max burst": e.MaxBurst, "max publishes": e.MaxPublishes, "max concurrency": e.MaxConcurrency,
 	} {
-		if _, ok := limitDescriptorFor(id); !ok {
+		if _, ok := countDescriptorFor(id); !ok {
 			return fmt.Errorf("unknown entitlement %s id %d", name, id)
 		}
 	}
@@ -304,7 +368,7 @@ func (e Entitlement) Allows(policy PolicySpec) error {
 	if required := policy.RequiredFeatures(); required&^e.Features != 0 {
 		return fmt.Errorf("policy features %#x exceed entitlement features %#x", required, e.Features)
 	}
-	if policy.Rate.Value() > e.MaxRate.Value() {
+	if policy.Rate.RequestsPerSecond() > e.MaxRate.RequestsPerSecond() {
 		return errors.New("policy rate exceeds entitlement ceiling")
 	}
 	if policy.Burst.Value() > e.MaxBurst.Value() {
@@ -337,15 +401,13 @@ func ValidatePolicy(profile Profile, policy PolicySpec, entitlement Entitlement)
 	return nil
 }
 
-// v2 keeps the compact 64-bit envelope but changes the four 8-bit numeric
-// fields into descriptor IDs. Layout:
-//   bits  0..7   rate LimitID
-//   bits  8..15  burst LimitID
-//   bits 16..23  publishes LimitID
+// V2 wire layout:
+//   bits  0..7   rate RateID (requests/second descriptor)
+//   bits  8..15  burst CountID
+//   bits 16..23  publishes CountID
 //   bits 24..31  duration DurationID
-//   bits 32..39  concurrency LimitID
-//   bits 40..43  strategy
-//   bits 44..55  features
+//   bits 32..39  concurrency CountID
+//   bits 40..55  feature mask
 //   bits 56..59  reserved (zero)
 //   bits 60..63  version
 func EncodePolicy(p PolicySpec) (PolicyCode, error) {
@@ -358,8 +420,7 @@ func EncodePolicy(p PolicySpec) (PolicyCode, error) {
 	code |= uint64(p.Publishes) << 16
 	code |= uint64(p.Duration) << 24
 	code |= uint64(p.Concurrency) << 32
-	code |= uint64(p.Strategy&0x0f) << 40
-	code |= uint64(p.Features&0x0fff) << 44
+	code |= uint64(p.Features) << 40
 	return PolicyCode(code), nil
 }
 
@@ -371,13 +432,12 @@ func DecodePolicy(code PolicyCode) (PolicySpec, error) {
 	switch version {
 	case PolicyVersion2:
 		policy := PolicySpec{
-			Rate:        LimitID(uint64(code) & 0xff),
-			Burst:       LimitID((uint64(code) >> 8) & 0xff),
-			Publishes:   LimitID((uint64(code) >> 16) & 0xff),
+			Rate:        RateID(uint64(code) & 0xff),
+			Burst:       CountID((uint64(code) >> 8) & 0xff),
+			Publishes:   CountID((uint64(code) >> 16) & 0xff),
 			Duration:    DurationID((uint64(code) >> 24) & 0xff),
-			Concurrency: LimitID((uint64(code) >> 32) & 0xff),
-			Strategy:    Strategy((uint64(code) >> 40) & 0x0f),
-			Features:    PolicyFeature((uint64(code) >> 44) & 0x0fff),
+			Concurrency: CountID((uint64(code) >> 32) & 0xff),
+			Features:    PolicyFeature((uint64(code) >> 40) & 0xffff),
 		}
 		return policy, policy.Validate()
 	case PolicyVersion1:
@@ -387,16 +447,23 @@ func DecodePolicy(code PolicyCode) (PolicySpec, error) {
 	}
 }
 
-// decodePolicyV1 is migration-only. v1 ScaleClass values are translated into
-// explicit v2 registry IDs and fail closed if a legacy value has no v2 entry.
+// decodePolicyV1 is migration-only. Legacy ScaleClass values are translated to
+// their actual numeric values, then looked up in the appropriate v2 registry.
+// Legacy allocation strategy bits are intentionally discarded because v2 does
+// not encode pricing/allocation strategy.
 func decodePolicyV1(code PolicyCode) (PolicySpec, error) {
-	legacyLimit := func(raw uint8) (LimitID, error) {
+	legacyValue := func(raw uint8) uint64 {
 		if raw == 0 {
-			return 0, nil
+			return 0
 		}
 		packed := raw - 1
-		value := uint64((packed&0x0f)+1) << (packed >> 4)
-		return NewLimitID(value)
+		return uint64((packed&0x0f)+1) << (packed >> 4)
+	}
+	legacyCount := func(raw uint8) (CountID, error) {
+		return NewCountID(legacyValue(raw))
+	}
+	legacyRate := func(raw uint8) (RateID, error) {
+		return NewRateID(legacyValue(raw))
 	}
 	legacyDuration := func(raw uint8) (DurationID, error) {
 		switch raw {
@@ -437,15 +504,15 @@ func decodePolicyV1(code PolicyCode) (PolicySpec, error) {
 		}
 	}
 
-	rate, err := legacyLimit(uint8(uint64(code) & 0xff))
+	rate, err := legacyRate(uint8(uint64(code) & 0xff))
 	if err != nil {
 		return PolicySpec{}, fmt.Errorf("decode v1 rate: %w", err)
 	}
-	burst, err := legacyLimit(uint8((uint64(code) >> 8) & 0xff))
+	burst, err := legacyCount(uint8((uint64(code) >> 8) & 0xff))
 	if err != nil {
 		return PolicySpec{}, fmt.Errorf("decode v1 burst: %w", err)
 	}
-	publishes, err := legacyLimit(uint8((uint64(code) >> 16) & 0xff))
+	publishes, err := legacyCount(uint8((uint64(code) >> 16) & 0xff))
 	if err != nil {
 		return PolicySpec{}, fmt.Errorf("decode v1 publishes: %w", err)
 	}
@@ -453,7 +520,7 @@ func decodePolicyV1(code PolicyCode) (PolicySpec, error) {
 	if err != nil {
 		return PolicySpec{}, err
 	}
-	concurrency, err := legacyLimit(uint8((uint64(code) >> 32) & 0xff))
+	concurrency, err := legacyCount(uint8((uint64(code) >> 32) & 0xff))
 	if err != nil {
 		return PolicySpec{}, fmt.Errorf("decode v1 concurrency: %w", err)
 	}
@@ -463,21 +530,19 @@ func decodePolicyV1(code PolicyCode) (PolicySpec, error) {
 		Publishes:   publishes,
 		Duration:    duration,
 		Concurrency: concurrency,
-		Strategy:    Strategy((uint64(code) >> 40) & 0x0f),
 		Features:    PolicyFeature((uint64(code) >> 44) & 0x0fff),
 	}
 	return policy, policy.Validate()
 }
 
 type CompiledPolicy struct {
-	Code        PolicyCode
-	Rate        uint64
-	Burst       uint64
-	Publishes   uint64
-	Duration    time.Duration
-	Concurrency uint64
-	Strategy    Strategy
-	Features    PolicyFeature
+	Code              PolicyCode
+	RequestsPerSecond uint64
+	Burst             uint64
+	Publishes         uint64
+	Duration          time.Duration
+	Concurrency       uint64
+	Features          PolicyFeature
 }
 
 func CompilePolicy(profile Profile, policy PolicySpec, entitlement Entitlement) (CompiledPolicy, error) {
@@ -489,45 +554,34 @@ func CompilePolicy(profile Profile, policy PolicySpec, entitlement Entitlement) 
 		return CompiledPolicy{}, err
 	}
 	return CompiledPolicy{
-		Code:        code,
-		Rate:        policy.Rate.Value(),
-		Burst:       policy.Burst.Value(),
-		Publishes:   policy.Publishes.Value(),
-		Duration:    policy.Duration.Duration(),
-		Concurrency: policy.Concurrency.Value(),
-		Strategy:    policy.Strategy,
-		Features:    policy.RequiredFeatures(),
+		Code:              code,
+		RequestsPerSecond: policy.Rate.RequestsPerSecond(),
+		Burst:             policy.Burst.Value(),
+		Publishes:         policy.Publishes.Value(),
+		Duration:          policy.Duration.Duration(),
+		Concurrency:       policy.Concurrency.Value(),
+		Features:          policy.RequiredFeatures(),
 	}, nil
 }
 
-// AllocatePolicy remains as a convenience for callers that want a policy at
-// their entitlement ceilings. v2 intentionally does not invent a cross-axis
-// mathematical budget. Strategy is retained only as a runtime hint.
-func AllocatePolicy(profile Profile, entitlement Entitlement, strategy Strategy) (PolicySpec, error) {
-	if strategy == StrategyFixed {
-		return PolicySpec{}, errors.New("fixed strategy requires an explicit policy")
+func OrderedCountIDs() []CountID {
+	descriptors := append([]countDescriptor(nil), countDescriptors...)
+	sort.Slice(descriptors, func(i, j int) bool { return descriptors[i].Value < descriptors[j].Value })
+	out := make([]CountID, len(descriptors))
+	for i, descriptor := range descriptors {
+		out[i] = descriptor.ID
 	}
-	policy := PolicySpec{
-		Rate:        entitlement.MaxRate,
-		Burst:       entitlement.MaxBurst,
-		Publishes:   entitlement.MaxPublishes,
-		Duration:    entitlement.MaxDuration,
-		Concurrency: entitlement.MaxConcurrency,
-		Strategy:    strategy,
-	}
-	policy.Features = entitlement.Features &^ FeatureTimer
-	if err := ValidatePolicy(profile, policy, entitlement); err != nil {
-		return PolicySpec{}, err
-	}
-	return policy, nil
+	return out
 }
 
-// OrderedLimitIDs and OrderedDurationIDs expose semantic order without leaking
-// wire-ID ordering assumptions into callers.
-func OrderedLimitIDs() []LimitID {
-	descriptors := append([]limitDescriptor(nil), limitDescriptors...)
-	sort.Slice(descriptors, func(i, j int) bool { return descriptors[i].Value < descriptors[j].Value })
-	out := make([]LimitID, len(descriptors))
+func OrderedLimitIDs() []LimitID { return OrderedCountIDs() }
+
+func OrderedRateIDs() []RateID {
+	descriptors := append([]rateDescriptor(nil), rateDescriptors...)
+	sort.Slice(descriptors, func(i, j int) bool {
+		return descriptors[i].RequestsPerSecond < descriptors[j].RequestsPerSecond
+	})
+	out := make([]RateID, len(descriptors))
 	for i, descriptor := range descriptors {
 		out[i] = descriptor.ID
 	}
