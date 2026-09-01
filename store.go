@@ -10,14 +10,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisConfig controls package-owned Redis key naming. Connection and transport
-// policy remain the caller's responsibility.
 type RedisConfig struct {
 	Keyspace string
 }
 
-// RedisStore owns rate-limiter bootstrap and invocation state. It does not own
-// or close the supplied Redis client.
 type RedisStore struct {
 	store *redisstore.Store
 }
@@ -30,9 +26,6 @@ func NewRedisStore(client redis.UniversalClient, cfg RedisConfig) (*RedisStore, 
 	return &RedisStore{store: store}, nil
 }
 
-// NewClientFromEnv preserves the existing deployment convention while accepting
-// either host:port or a redis:// / rediss:// URL. REDISCLI_AUTH overrides a URL
-// password when supplied.
 func NewClientFromEnv() (*redis.Client, error) {
 	return redisstore.NewClientFromEnv()
 }
@@ -44,9 +37,6 @@ func (s *RedisStore) Ping(ctx context.Context) error {
 	return s.store.Ping(ctx)
 }
 
-// Bootstrap loads or replaces only the selected profile libraries. Profiles use
-// separate libraries, so bootstrapping one service cannot unregister another
-// profile used by a different service sharing the same Redis instance.
 func (s *RedisStore) Bootstrap(ctx context.Context, profiles ...Profile) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("redis store is not initialized")
@@ -66,29 +56,34 @@ func (s *RedisStore) Bootstrap(ctx context.Context, profiles ...Profile) error {
 		}
 		seen[libraryName] = struct{}{}
 
-		registrations := []redisfunc.Registration{{
-			FunctionName: profiledef.FunctionName(profile),
-			WrapperName:  profiledef.LuaWrapperName(profile),
-		}}
-		if profiledef.SupportsPreflight(profile) {
-			registrations = append(
-				registrations,
-				redisfunc.Registration{
-					FunctionName: profiledef.TimerArmAbsoluteFunctionName(profile),
-					WrapperName:  "timer_arm_absolute",
-				},
-				redisfunc.Registration{
-					FunctionName: profiledef.TimerTickFunctionName(profile),
-					WrapperName:  "timer_tick",
-				},
-				redisfunc.Registration{
-					FunctionName: profiledef.TimerCancelFunctionName(profile),
-					WrapperName:  "timer_cancel",
-				},
-			)
+		var source string
+		var err error
+		if profiledef.SupportsBurst(profile) {
+			source, err = redisfunc.RenderBurst(libraryName, profiledef.FunctionName(profile))
+		} else {
+			registrations := []redisfunc.Registration{{
+				FunctionName: profiledef.FunctionName(profile),
+				WrapperName:  profiledef.LuaWrapperName(profile),
+			}}
+			if profiledef.SupportsPreflight(profile) {
+				registrations = append(
+					registrations,
+					redisfunc.Registration{
+						FunctionName: profiledef.TimerArmAbsoluteFunctionName(profile),
+						WrapperName:  "timer_arm_absolute",
+					},
+					redisfunc.Registration{
+						FunctionName: profiledef.TimerTickFunctionName(profile),
+						WrapperName:  "timer_tick",
+					},
+					redisfunc.Registration{
+						FunctionName: profiledef.TimerCancelFunctionName(profile),
+						WrapperName:  "timer_cancel",
+					},
+				)
+			}
+			source, err = redisfunc.Render(libraryName, registrations...)
 		}
-
-		source, err := redisfunc.Render(libraryName, registrations...)
 		if err != nil {
 			return fmt.Errorf("render %s: %w", libraryName, err)
 		}
