@@ -40,11 +40,15 @@ func NewClientFromEnv() (*redis.Client, error) {
 		return nil, errors.New("REDIS_URI is not set")
 	}
 
+	username := strings.TrimSpace(os.Getenv("REDIS_USERNAME"))
 	password := os.Getenv("REDISCLI_AUTH")
 	if strings.Contains(addr, "://") {
 		opts, err := redis.ParseURL(addr)
 		if err != nil {
 			return nil, fmt.Errorf("parse REDIS_URI: %w", err)
+		}
+		if username != "" {
+			opts.Username = username
 		}
 		if password != "" {
 			opts.Password = password
@@ -54,6 +58,7 @@ func NewClientFromEnv() (*redis.Client, error) {
 
 	return redis.NewClient(&redis.Options{
 		Addr:     addr,
+		Username: username,
 		Password: password,
 		DB:       0,
 	}), nil
