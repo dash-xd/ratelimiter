@@ -20,17 +20,18 @@ jobs:
       - name: Checkout ratelimiter
         uses: actions/checkout@v7
 
-      - name: Checkout sus-redis
+      - name: Checkout sus-redis fixture
         uses: actions/checkout@v7
         with:
           repository: xd-dash/sus-redis
+          ref: 432f1197fd59d6cecafecb504c506f418b5d63af
           path: .deps/sus-redis
 
       - name: Checkout logma-serverless tester
         uses: actions/checkout@v7
         with:
           repository: xd-dash/logma-serverless
-          ref: claude/main
+          ref: 4ce1fb9a70adf4f88658fe51b8dfcfe7fbd6e934
           path: .deps/logma-serverless
 
       - name: Checkout lifecycle-qualified Logma
@@ -84,13 +85,13 @@ jobs:
           echo "Redis did not start" >&2
           exit 1
 
-      - name: Compose ratelimiter and Logma workspace
+      - name: Compose exact ratelimiter and Logma workspace
         shell: bash
         run: |
           set -euo pipefail
           go work init . .deps/logma
 
-      - name: Start stateful Logma with workspace ratelimiter
+      - name: Start canonical Logma with workspace ratelimiter
         shell: bash
         env:
           REDIS_URI: 127.0.0.1:6380
