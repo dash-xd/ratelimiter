@@ -103,7 +103,7 @@ func TestAbsoluteLifecycleTimerFCALLContract(t *testing.T) {
 
 	select {
 	case message := <-pubsub.Channel():
-		var envelope ratelimiter.PubSubMessage
+		var envelope ratelimiter.LifecycleSignalMessage
 		if err := json.Unmarshal([]byte(message.Payload), &envelope); err != nil {
 			t.Fatal(err)
 		}
