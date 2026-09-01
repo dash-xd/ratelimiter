@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - preflight-lifecycle
+      - lifecycle-handoff
     paths:
       - ".github/requests/test.txt"
   workflow_dispatch:
