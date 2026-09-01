@@ -5,7 +5,6 @@ package ratelimiter_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -292,4 +291,3 @@ func assertTimerScore(t *testing.T, ctx context.Context, client *redis.Client, k
 	}
 }
 
-var _ = fmt.Sprintf
