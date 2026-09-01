@@ -32,13 +32,12 @@ var namedLifecycleDurations = map[LifecyclePolicyName]DurationClass{
 	LifecycleSandbox30D: Duration30D,
 }
 
-// LifecyclePolicy returns an explicit fixed timer policy. The policy says when
-// a lifecycle expires; the caller separately supplies deployment identity and
+// LifecyclePolicy returns an explicit timer policy. The policy says when a
+// lifecycle expires; the caller separately supplies deployment identity and
 // shutdown routing, which determine what may receive the lifecycle signal.
 func LifecyclePolicy(duration DurationClass) (PolicySpec, error) {
 	policy := PolicySpec{
 		Duration: duration,
-		Strategy: StrategyFixed,
 		Features: FeatureCallbacks,
 	}
 	if duration == DurationNone {
@@ -52,7 +51,7 @@ func LifecyclePolicy(duration DurationClass) (PolicySpec, error) {
 
 // NamedLifecyclePolicy compiles a readable alias into the exact PolicySpec that
 // is encoded and persisted. Adding or reordering aliases never changes wire
-// values; only DurationClass's explicit stable codes do that.
+// values; only DurationID's explicit stable codes do that.
 func NamedLifecyclePolicy(name LifecyclePolicyName) (PolicySpec, error) {
 	duration, ok := namedLifecycleDurations[name]
 	if !ok {
