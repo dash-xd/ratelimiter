@@ -116,14 +116,29 @@ func (l *Limiter) ArmTimerAt(
 	}
 
 	timerKey, payloadKey := l.store.store.LifecycleKeys(in.Bucket)
-	return l.store.store.ArmLifecycleTimerAbsolute(
+	resetArg := int64(0)
+	if reset {
+		resetArg = 1
+	}
+	values, err := l.store.store.Call(
 		ctx,
-		timerKey,
-		payloadKey,
+		profiledef.TimerArmAbsoluteFunctionName(l.profile),
+		[]string{timerKey, payloadKey},
 		string(ctxJSON),
 		deadline.UTC().UnixMilli(),
-		reset,
+		resetArg,
 	)
+	if err != nil {
+		return false, err
+	}
+	if len(values) != 1 {
+		return false, fmt.Errorf("unexpected lifecycle timer arm response length %d", len(values))
+	}
+	armed, ok := values[0].(int64)
+	if !ok {
+		return false, fmt.Errorf("unexpected timer arm response type %T", values[0])
+	}
+	return armed == 1, nil
 }
 
 // Tick performs one bounded evaluation of the Redis-owned preflight lifecycle
