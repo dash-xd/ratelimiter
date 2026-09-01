@@ -6,6 +6,7 @@ type Kind string
 
 const (
 	MinimalKind   Kind = "minimal"
+	BurstKind     Kind = "burst"
 	PreflightKind Kind = "preflight"
 	DecisionsKind Kind = "decisions"
 	LifecycleKind Kind = "lifecycle"
@@ -27,16 +28,13 @@ func (c Capability) HasAll(required Capability) bool {
 	return c&required == required
 }
 
-// Definition is an opaque rate-limiter composition. Public callers construct
-// values through one of the profile packages.
 type Definition struct {
 	kind     Kind
 	resolver any
 }
 
-func Minimal() Definition {
-	return Definition{kind: MinimalKind}
-}
+func Minimal() Definition { return Definition{kind: MinimalKind} }
+func Burst() Definition   { return Definition{kind: BurstKind} }
 
 func Preflight(resolver any) Definition {
 	return Definition{kind: PreflightKind, resolver: resolver}
@@ -52,7 +50,7 @@ func Lifecycle(resolver any) Definition {
 
 func Validate(d Definition) error {
 	switch d.kind {
-	case MinimalKind:
+	case MinimalKind, BurstKind:
 		return nil
 	case PreflightKind, DecisionsKind, LifecycleKind:
 		if d.resolver == nil {
@@ -64,18 +62,15 @@ func Validate(d Definition) error {
 	}
 }
 
-func KindOf(d Definition) Kind {
-	return d.kind
-}
-
-func ResolverOf(d Definition) any {
-	return d.resolver
-}
+func KindOf(d Definition) Kind { return d.kind }
+func ResolverOf(d Definition) any { return d.resolver }
 
 func Capabilities(d Definition) Capability {
 	switch d.kind {
 	case MinimalKind:
 		return CapabilityWindow
+	case BurstKind:
+		return CapabilityWindow | CapabilityBurst
 	case PreflightKind:
 		return CapabilityWindow | CapabilityCallbacks | CapabilityPreflight | CapabilityTimer
 	case DecisionsKind:
@@ -87,22 +82,17 @@ func Capabilities(d Definition) Capability {
 	}
 }
 
-func Publishes(d Definition) bool {
-	return Capabilities(d).HasAll(CapabilityCallbacks)
-}
-
-func UsesBlockedKey(d Definition) bool {
-	return Capabilities(d).HasAll(CapabilityBlockedState)
-}
-
-func SupportsPreflight(d Definition) bool {
-	return Capabilities(d).HasAll(CapabilityPreflight)
-}
+func Publishes(d Definition) bool { return Capabilities(d).HasAll(CapabilityCallbacks) }
+func UsesBlockedKey(d Definition) bool { return Capabilities(d).HasAll(CapabilityBlockedState) }
+func SupportsPreflight(d Definition) bool { return Capabilities(d).HasAll(CapabilityPreflight) }
+func SupportsBurst(d Definition) bool { return Capabilities(d).HasAll(CapabilityBurst) }
 
 func FunctionName(d Definition) string {
 	switch d.kind {
 	case MinimalKind:
 		return "dashxd_ratelimit_minimal_v1"
+	case BurstKind:
+		return "dashxd_ratelimit_burst_v1"
 	case PreflightKind:
 		return "dashxd_ratelimit_preflight_v1"
 	case DecisionsKind:
@@ -147,27 +137,23 @@ func TimerCancelFunctionName(d Definition) string {
 	}
 }
 
-// TimerRuntimeACLCommands returns the Redis commands a caller must be allowed
-// to execute for the timer FCALL entry points. Redis Functions run under the
-// caller's ACL, so +FCALL alone is insufficient. The returned commands do not
-// include bootstrap/admin commands such as FUNCTION LOAD or CONFIG.
 func TimerRuntimeACLCommands(d Definition) []string {
 	if !Capabilities(d).HasAll(CapabilityTimer) {
 		return nil
 	}
 	return []string{
-		"fcall",
-		"type",
-		"time",
-		"zadd",
-		"hset",
-		"hexists",
-		"zrangebyscore",
-		"hget",
-		"publish",
-		"zrem",
-		"hdel",
+		"fcall", "type", "time", "zadd", "hset", "hexists", "zrangebyscore",
+		"hget", "publish", "zrem", "hdel",
 	}
+}
+
+// BurstRuntimeACLCommands is the minimal command set used by the atomic token
+// bucket. It excludes all bootstrap/admin authority.
+func BurstRuntimeACLCommands(d Definition) []string {
+	if !SupportsBurst(d) {
+		return nil
+	}
+	return []string{"fcall", "time", "hmget", "hset", "pexpire"}
 }
 
 func LibraryName(d Definition) string {
@@ -181,6 +167,8 @@ func LuaWrapperName(d Definition) string {
 	switch d.kind {
 	case MinimalKind:
 		return "rate_limit_minimal"
+	case BurstKind:
+		return "rate_limit_burst"
 	case PreflightKind:
 		return "rate_limit_preflight"
 	case DecisionsKind:
