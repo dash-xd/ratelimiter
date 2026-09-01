@@ -3,13 +3,18 @@ package ratelimiter
 import (
 	"errors"
 	"fmt"
-	"math/bits"
+	"sort"
 	"time"
 
 	"github.com/dash-xd/ratelimiter/internal/profiledef"
 )
 
-const PolicyVersion1 uint8 = 1
+const (
+	// PolicyVersion1 is retained only so persisted early-development policy codes
+	// can be decoded during the transition. New policies are always encoded as v2.
+	PolicyVersion1 uint8 = 1
+	PolicyVersion2 uint8 = 2
+)
 
 type PolicyCode uint64
 type PolicyFeature uint16
@@ -18,9 +23,175 @@ const (
 	FeatureCallbacks PolicyFeature = 1 << iota
 	FeatureTimer
 	FeatureBlockedState
-	FeatureAdaptive
 )
 
+// LimitID is an opaque wire identifier for a supported numeric limit. It is
+// deliberately not an ordinal and must never be compared numerically. The
+// descriptor registry is the source of truth for the actual value.
+type LimitID uint8
+
+// ScaleClass is kept as a source-compatibility alias while downstream callers
+// migrate to LimitID. It no longer has exponent/mantissa semantics in v2.
+type ScaleClass = LimitID
+
+type limitDescriptor struct {
+	ID    LimitID
+	Value uint64
+}
+
+// The v2 registry intentionally favors common operational values. Adding a new
+// value means appending a new stable ID; existing IDs never move. Ordering is
+// derived from Value, never from ID.
+var limitDescriptors = []limitDescriptor{
+	{0, 0},
+	{1, 1},
+	{2, 2},
+	{3, 3},
+	{4, 4},
+	{5, 5},
+	{6, 8},
+	{7, 10},
+	{8, 16},
+	{9, 20},
+	{10, 32},
+	{11, 50},
+	{12, 64},
+	{13, 100},
+	{14, 128},
+	{15, 200},
+	{16, 256},
+	{17, 500},
+	{18, 512},
+	{19, 1000},
+	{20, 1024},
+	{21, 2000},
+	{22, 4096},
+	{23, 5000},
+	{24, 8192},
+	{25, 10000},
+	{26, 16384},
+	{27, 20000},
+	{28, 32768},
+	{29, 50000},
+	{30, 65536},
+	{31, 100000},
+	{32, 131072},
+	{33, 250000},
+	{34, 262144},
+	{35, 500000},
+	{36, 524288},
+	{37, 1000000},
+}
+
+func limitDescriptorFor(id LimitID) (limitDescriptor, bool) {
+	for _, descriptor := range limitDescriptors {
+		if descriptor.ID == id {
+			return descriptor, true
+		}
+	}
+	return limitDescriptor{}, false
+}
+
+func NewLimitID(value uint64) (LimitID, error) {
+	for _, descriptor := range limitDescriptors {
+		if descriptor.Value == value {
+			return descriptor.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("limit %d is not in the supported limit registry", value)
+}
+
+// NewScaleClass is the compatibility spelling for NewLimitID.
+func NewScaleClass(value uint64) (ScaleClass, error) { return NewLimitID(value) }
+
+func (id LimitID) Value() uint64 {
+	descriptor, ok := limitDescriptorFor(id)
+	if !ok {
+		return 0
+	}
+	return descriptor.Value
+}
+
+// DurationID is an opaque v2 wire identifier. v2 IDs are cleanly assigned in
+// semantic order today, but callers must still compare Duration(), not IDs.
+type DurationID uint8
+
+// DurationClass is retained as a source-compatibility alias.
+type DurationClass = DurationID
+
+const (
+	DurationNone DurationID = iota
+	Duration1S
+	Duration3S
+	Duration10S
+	Duration30S
+	Duration1M
+	Duration5M
+	Duration10M
+	Duration20M
+	Duration1H
+	Duration6H
+	Duration24H
+	Duration3D
+	Duration7D
+	Duration14D
+	Duration30D
+)
+
+type durationDescriptor struct {
+	ID       DurationID
+	Duration time.Duration
+}
+
+var durationDescriptors = []durationDescriptor{
+	{DurationNone, 0},
+	{Duration1S, time.Second},
+	{Duration3S, 3 * time.Second},
+	{Duration10S, 10 * time.Second},
+	{Duration30S, 30 * time.Second},
+	{Duration1M, time.Minute},
+	{Duration5M, 5 * time.Minute},
+	{Duration10M, 10 * time.Minute},
+	{Duration20M, 20 * time.Minute},
+	{Duration1H, time.Hour},
+	{Duration6H, 6 * time.Hour},
+	{Duration24H, 24 * time.Hour},
+	{Duration3D, 3 * 24 * time.Hour},
+	{Duration7D, 7 * 24 * time.Hour},
+	{Duration14D, 14 * 24 * time.Hour},
+	{Duration30D, 30 * 24 * time.Hour},
+}
+
+func durationDescriptorFor(id DurationID) (durationDescriptor, bool) {
+	for _, descriptor := range durationDescriptors {
+		if descriptor.ID == id {
+			return descriptor, true
+		}
+	}
+	return durationDescriptor{}, false
+}
+
+func (id DurationID) Duration() time.Duration {
+	descriptor, ok := durationDescriptorFor(id)
+	if !ok {
+		return 0
+	}
+	return descriptor.Duration
+}
+
+func DurationIDFor(duration time.Duration) (DurationID, error) {
+	for _, descriptor := range durationDescriptors {
+		if descriptor.Duration == duration {
+			return descriptor.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("duration %s is not in the supported duration registry", duration)
+}
+
+func DurationClassFor(duration time.Duration) (DurationClass, error) { return DurationIDFor(duration) }
+
+// Strategy remains a policy hint, not a pricing algorithm. v2 does not derive
+// entitlements or pricing from Strategy.
 type Strategy uint8
 
 const (
@@ -31,143 +202,26 @@ const (
 	StrategyBurstFirst
 )
 
-// ScaleClass is a compact positive integer class. Zero means disabled. For a
-// non-zero class, raw-1 is interpreted as [4-bit exponent | 4-bit mantissa] and
-// expands to (mantissa+1)<<exponent. This keeps small limits dense while still
-// covering large limits with one byte.
-type ScaleClass uint8
-
-func NewScaleClass(value uint64) (ScaleClass, error) {
-	if value == 0 {
-		return 0, nil
-	}
-	for raw := 1; raw <= 255; raw++ {
-		class := ScaleClass(raw)
-		if class.Value() == value {
-			return class, nil
-		}
-	}
-	return 0, fmt.Errorf("value %d is not representable as a scale class", value)
-}
-
-func (c ScaleClass) Value() uint64 {
-	if c == 0 {
-		return 0
-	}
-	packed := uint8(c) - 1
-	exponent := packed >> 4
-	mantissa := packed & 0x0f
-	return uint64(mantissa+1) << exponent
-}
-
-func (c ScaleClass) energyMagnitude() uint16 {
-	value := c.Value()
-	if value == 0 {
-		return 0
-	}
-	return uint16(bits.Len64(value))
-}
-
-// DurationClass is a stable PolicyCode wire value, not an ordering ordinal.
-// Existing numeric values are protocol and must never be renumbered. Semantic
-// properties such as actual duration, allocation order, and energy weight live
-// in durationDescriptors below.
-type DurationClass uint8
-
-const (
-	DurationNone DurationClass = 0
-	Duration1S   DurationClass = 1
-	Duration3S   DurationClass = 2
-	Duration10S  DurationClass = 3
-	Duration30S  DurationClass = 4
-	Duration1M   DurationClass = 5
-	Duration5M   DurationClass = 6
-	Duration20M  DurationClass = 7
-	Duration1H   DurationClass = 8
-	Duration6H   DurationClass = 9
-	Duration24H  DurationClass = 10
-	Duration3D   DurationClass = 11
-	Duration7D   DurationClass = 12
-	Duration14D  DurationClass = 13
-	Duration30D  DurationClass = 14
-	Duration10M  DurationClass = 15
-)
-
-type durationDescriptor struct {
-	Class        DurationClass
-	Duration     time.Duration
-	EnergyWeight uint16
-}
-
-var durationDescriptors = []durationDescriptor{
-	{Class: DurationNone, Duration: 0, EnergyWeight: 0},
-	{Class: Duration1S, Duration: time.Second, EnergyWeight: 1},
-	{Class: Duration3S, Duration: 3 * time.Second, EnergyWeight: 2},
-	{Class: Duration10S, Duration: 10 * time.Second, EnergyWeight: 3},
-	{Class: Duration30S, Duration: 30 * time.Second, EnergyWeight: 4},
-	{Class: Duration1M, Duration: time.Minute, EnergyWeight: 5},
-	{Class: Duration5M, Duration: 5 * time.Minute, EnergyWeight: 6},
-	// 10m was added after the original wire values were already durable. It gets
-	// a new wire code but is ordered semantically between 5m and 20m. Its energy
-	// weight is explicit rather than inferred from its wire code.
-	{Class: Duration10M, Duration: 10 * time.Minute, EnergyWeight: 7},
-	{Class: Duration20M, Duration: 20 * time.Minute, EnergyWeight: 7},
-	{Class: Duration1H, Duration: time.Hour, EnergyWeight: 8},
-	{Class: Duration6H, Duration: 6 * time.Hour, EnergyWeight: 9},
-	{Class: Duration24H, Duration: 24 * time.Hour, EnergyWeight: 10},
-	{Class: Duration3D, Duration: 3 * 24 * time.Hour, EnergyWeight: 11},
-	{Class: Duration7D, Duration: 7 * 24 * time.Hour, EnergyWeight: 12},
-	{Class: Duration14D, Duration: 14 * 24 * time.Hour, EnergyWeight: 13},
-	{Class: Duration30D, Duration: 30 * 24 * time.Hour, EnergyWeight: 14},
-}
-
-func durationDescriptorFor(class DurationClass) (durationDescriptor, bool) {
-	for _, descriptor := range durationDescriptors {
-		if descriptor.Class == class {
-			return descriptor, true
-		}
-	}
-	return durationDescriptor{}, false
-}
-
-func (c DurationClass) Duration() time.Duration {
-	descriptor, ok := durationDescriptorFor(c)
-	if !ok {
-		return 0
-	}
-	return descriptor.Duration
-}
-
-func (c DurationClass) energyMagnitude() uint16 {
-	descriptor, ok := durationDescriptorFor(c)
-	if !ok {
-		return 0
-	}
-	return descriptor.EnergyWeight
-}
-
-func DurationClassFor(duration time.Duration) (DurationClass, error) {
-	for _, descriptor := range durationDescriptors {
-		if descriptor.Duration == duration {
-			return descriptor.Class, nil
-		}
-	}
-	return 0, fmt.Errorf("duration %s is not a supported duration class", duration)
-}
-
 type PolicySpec struct {
-	Rate        ScaleClass
-	Burst       ScaleClass
-	Publishes   ScaleClass
-	Duration    DurationClass
-	Concurrency ScaleClass
+	Rate        LimitID
+	Burst       LimitID
+	Publishes   LimitID
+	Duration    DurationID
+	Concurrency LimitID
 	Strategy    Strategy
 	Features    PolicyFeature
 }
 
 func (p PolicySpec) Validate() error {
+	for name, id := range map[string]LimitID{
+		"rate": p.Rate, "burst": p.Burst, "publishes": p.Publishes, "concurrency": p.Concurrency,
+	} {
+		if _, ok := limitDescriptorFor(id); !ok {
+			return fmt.Errorf("unknown %s limit id %d", name, id)
+		}
+	}
 	if _, ok := durationDescriptorFor(p.Duration); !ok {
-		return fmt.Errorf("unknown duration class %d", p.Duration)
+		return fmt.Errorf("unknown duration id %d", p.Duration)
 	}
 	if p.Strategy > StrategyBurstFirst {
 		return fmt.Errorf("unknown strategy %d", p.Strategy)
@@ -182,9 +236,6 @@ func (p PolicySpec) RequiredFeatures() PolicyFeature {
 	features := p.Features
 	if p.Duration != DurationNone {
 		features |= FeatureTimer
-	}
-	if p.Strategy != StrategyFixed {
-		features |= FeatureAdaptive
 	}
 	return features
 }
@@ -213,62 +264,20 @@ func (p PolicySpec) Requirements() Capability {
 	return required
 }
 
-func (p PolicySpec) EnergyCost() uint16 {
-	return p.Rate.energyMagnitude()*3 +
-		p.Burst.energyMagnitude() +
-		p.Publishes.energyMagnitude()*2 +
-		p.Duration.energyMagnitude()*2 +
-		p.Concurrency.energyMagnitude()*4
-}
-
-func EncodePolicy(p PolicySpec) (PolicyCode, error) {
-	if err := p.Validate(); err != nil {
-		return 0, err
-	}
-	code := uint64(PolicyVersion1) << 60
-	code |= uint64(p.Rate)
-	code |= uint64(p.Burst) << 8
-	code |= uint64(p.Publishes) << 16
-	code |= uint64(p.Duration) << 24
-	code |= uint64(p.Concurrency) << 32
-	code |= uint64(p.Strategy&0x0f) << 40
-	code |= uint64(p.Features&0x0fff) << 44
-	return PolicyCode(code), nil
-}
-
-func DecodePolicy(code PolicyCode) (PolicySpec, error) {
-	version := uint8(uint64(code) >> 60)
-	if version != PolicyVersion1 {
-		return PolicySpec{}, fmt.Errorf("unsupported policy encoding version %d", version)
-	}
-	if uint64(code)&(uint64(0x0f)<<56) != 0 {
-		return PolicySpec{}, errors.New("policy reserved bits are non-zero")
-	}
-	policy := PolicySpec{
-		Rate:        ScaleClass(uint64(code) & 0xff),
-		Burst:       ScaleClass((uint64(code) >> 8) & 0xff),
-		Publishes:   ScaleClass((uint64(code) >> 16) & 0xff),
-		Duration:    DurationClass((uint64(code) >> 24) & 0xff),
-		Concurrency: ScaleClass((uint64(code) >> 32) & 0xff),
-		Strategy:    Strategy((uint64(code) >> 40) & 0x0f),
-		Features:    PolicyFeature((uint64(code) >> 44) & 0x0fff),
-	}
-	return policy, policy.Validate()
-}
-
+// Entitlement is deliberately boring: it is an explicit security/pricing
+// boundary. A commercial plan may map to one entitlement and usage can be
+// billed independently; there is no synthetic "energy" currency in v2.
 type Entitlement struct {
-	Energy         uint16
 	Features       PolicyFeature
-	MaxRate        ScaleClass
-	MaxBurst       ScaleClass
-	MaxPublishes   ScaleClass
-	MaxDuration    DurationClass
-	MaxConcurrency ScaleClass
+	MaxRate        LimitID
+	MaxBurst       LimitID
+	MaxPublishes   LimitID
+	MaxDuration    DurationID
+	MaxConcurrency LimitID
 }
 
 func EntitlementFor(policy PolicySpec) Entitlement {
 	return Entitlement{
-		Energy:         policy.EnergyCost(),
 		Features:       policy.RequiredFeatures(),
 		MaxRate:        policy.Rate,
 		MaxBurst:       policy.Burst,
@@ -282,29 +291,32 @@ func (e Entitlement) Allows(policy PolicySpec) error {
 	if err := policy.Validate(); err != nil {
 		return err
 	}
+	for name, id := range map[string]LimitID{
+		"max rate": e.MaxRate, "max burst": e.MaxBurst, "max publishes": e.MaxPublishes, "max concurrency": e.MaxConcurrency,
+	} {
+		if _, ok := limitDescriptorFor(id); !ok {
+			return fmt.Errorf("unknown entitlement %s id %d", name, id)
+		}
+	}
 	if _, ok := durationDescriptorFor(e.MaxDuration); !ok {
-		return fmt.Errorf("unknown entitlement duration class %d", e.MaxDuration)
+		return fmt.Errorf("unknown entitlement duration id %d", e.MaxDuration)
 	}
-	requiredFeatures := policy.RequiredFeatures()
-	if requiredFeatures&^e.Features != 0 {
-		return fmt.Errorf("policy features %#x exceed entitlement features %#x", requiredFeatures, e.Features)
+	if required := policy.RequiredFeatures(); required&^e.Features != 0 {
+		return fmt.Errorf("policy features %#x exceed entitlement features %#x", required, e.Features)
 	}
-	if policy.EnergyCost() > e.Energy {
-		return fmt.Errorf("policy energy %d exceeds entitlement energy %d", policy.EnergyCost(), e.Energy)
-	}
-	if exceedsScale(policy.Rate, e.MaxRate) {
+	if policy.Rate.Value() > e.MaxRate.Value() {
 		return errors.New("policy rate exceeds entitlement ceiling")
 	}
-	if exceedsScale(policy.Burst, e.MaxBurst) {
+	if policy.Burst.Value() > e.MaxBurst.Value() {
 		return errors.New("policy burst exceeds entitlement ceiling")
 	}
-	if exceedsScale(policy.Publishes, e.MaxPublishes) {
+	if policy.Publishes.Value() > e.MaxPublishes.Value() {
 		return errors.New("policy publish limit exceeds entitlement ceiling")
 	}
 	if policy.Duration.Duration() > e.MaxDuration.Duration() {
 		return errors.New("policy duration exceeds entitlement ceiling")
 	}
-	if exceedsScale(policy.Concurrency, e.MaxConcurrency) {
+	if policy.Concurrency.Value() > e.MaxConcurrency.Value() {
 		return errors.New("policy concurrency exceeds entitlement ceiling")
 	}
 	return nil
@@ -325,6 +337,138 @@ func ValidatePolicy(profile Profile, policy PolicySpec, entitlement Entitlement)
 	return nil
 }
 
+// v2 keeps the compact 64-bit envelope but changes the four 8-bit numeric
+// fields into descriptor IDs. Layout:
+//   bits  0..7   rate LimitID
+//   bits  8..15  burst LimitID
+//   bits 16..23  publishes LimitID
+//   bits 24..31  duration DurationID
+//   bits 32..39  concurrency LimitID
+//   bits 40..43  strategy
+//   bits 44..55  features
+//   bits 56..59  reserved (zero)
+//   bits 60..63  version
+func EncodePolicy(p PolicySpec) (PolicyCode, error) {
+	if err := p.Validate(); err != nil {
+		return 0, err
+	}
+	code := uint64(PolicyVersion2) << 60
+	code |= uint64(p.Rate)
+	code |= uint64(p.Burst) << 8
+	code |= uint64(p.Publishes) << 16
+	code |= uint64(p.Duration) << 24
+	code |= uint64(p.Concurrency) << 32
+	code |= uint64(p.Strategy&0x0f) << 40
+	code |= uint64(p.Features&0x0fff) << 44
+	return PolicyCode(code), nil
+}
+
+func DecodePolicy(code PolicyCode) (PolicySpec, error) {
+	version := uint8(uint64(code) >> 60)
+	if uint64(code)&(uint64(0x0f)<<56) != 0 {
+		return PolicySpec{}, errors.New("policy reserved bits are non-zero")
+	}
+	switch version {
+	case PolicyVersion2:
+		policy := PolicySpec{
+			Rate:        LimitID(uint64(code) & 0xff),
+			Burst:       LimitID((uint64(code) >> 8) & 0xff),
+			Publishes:   LimitID((uint64(code) >> 16) & 0xff),
+			Duration:    DurationID((uint64(code) >> 24) & 0xff),
+			Concurrency: LimitID((uint64(code) >> 32) & 0xff),
+			Strategy:    Strategy((uint64(code) >> 40) & 0x0f),
+			Features:    PolicyFeature((uint64(code) >> 44) & 0x0fff),
+		}
+		return policy, policy.Validate()
+	case PolicyVersion1:
+		return decodePolicyV1(code)
+	default:
+		return PolicySpec{}, fmt.Errorf("unsupported policy encoding version %d", version)
+	}
+}
+
+// decodePolicyV1 is migration-only. v1 ScaleClass values are translated into
+// explicit v2 registry IDs and fail closed if a legacy value has no v2 entry.
+func decodePolicyV1(code PolicyCode) (PolicySpec, error) {
+	legacyLimit := func(raw uint8) (LimitID, error) {
+		if raw == 0 {
+			return 0, nil
+		}
+		packed := raw - 1
+		value := uint64((packed&0x0f)+1) << (packed >> 4)
+		return NewLimitID(value)
+	}
+	legacyDuration := func(raw uint8) (DurationID, error) {
+		switch raw {
+		case 0:
+			return DurationNone, nil
+		case 1:
+			return Duration1S, nil
+		case 2:
+			return Duration3S, nil
+		case 3:
+			return Duration10S, nil
+		case 4:
+			return Duration30S, nil
+		case 5:
+			return Duration1M, nil
+		case 6:
+			return Duration5M, nil
+		case 7:
+			return Duration20M, nil
+		case 8:
+			return Duration1H, nil
+		case 9:
+			return Duration6H, nil
+		case 10:
+			return Duration24H, nil
+		case 11:
+			return Duration3D, nil
+		case 12:
+			return Duration7D, nil
+		case 13:
+			return Duration14D, nil
+		case 14:
+			return Duration30D, nil
+		case 15:
+			return Duration10M, nil
+		default:
+			return 0, fmt.Errorf("unknown v1 duration code %d", raw)
+		}
+	}
+
+	rate, err := legacyLimit(uint8(uint64(code) & 0xff))
+	if err != nil {
+		return PolicySpec{}, fmt.Errorf("decode v1 rate: %w", err)
+	}
+	burst, err := legacyLimit(uint8((uint64(code) >> 8) & 0xff))
+	if err != nil {
+		return PolicySpec{}, fmt.Errorf("decode v1 burst: %w", err)
+	}
+	publishes, err := legacyLimit(uint8((uint64(code) >> 16) & 0xff))
+	if err != nil {
+		return PolicySpec{}, fmt.Errorf("decode v1 publishes: %w", err)
+	}
+	duration, err := legacyDuration(uint8((uint64(code) >> 24) & 0xff))
+	if err != nil {
+		return PolicySpec{}, err
+	}
+	concurrency, err := legacyLimit(uint8((uint64(code) >> 32) & 0xff))
+	if err != nil {
+		return PolicySpec{}, fmt.Errorf("decode v1 concurrency: %w", err)
+	}
+	policy := PolicySpec{
+		Rate:        rate,
+		Burst:       burst,
+		Publishes:   publishes,
+		Duration:    duration,
+		Concurrency: concurrency,
+		Strategy:    Strategy((uint64(code) >> 40) & 0x0f),
+		Features:    PolicyFeature((uint64(code) >> 44) & 0x0fff),
+	}
+	return policy, policy.Validate()
+}
+
 type CompiledPolicy struct {
 	Code        PolicyCode
 	Rate        uint64
@@ -332,7 +476,6 @@ type CompiledPolicy struct {
 	Publishes   uint64
 	Duration    time.Duration
 	Concurrency uint64
-	Energy      uint16
 	Strategy    Strategy
 	Features    PolicyFeature
 }
@@ -352,136 +495,51 @@ func CompilePolicy(profile Profile, policy PolicySpec, entitlement Entitlement) 
 		Publishes:   policy.Publishes.Value(),
 		Duration:    policy.Duration.Duration(),
 		Concurrency: policy.Concurrency.Value(),
-		Energy:      policy.EnergyCost(),
 		Strategy:    policy.Strategy,
 		Features:    policy.RequiredFeatures(),
 	}, nil
 }
 
+// AllocatePolicy remains as a convenience for callers that want a policy at
+// their entitlement ceilings. v2 intentionally does not invent a cross-axis
+// mathematical budget. Strategy is retained only as a runtime hint.
 func AllocatePolicy(profile Profile, entitlement Entitlement, strategy Strategy) (PolicySpec, error) {
 	if strategy == StrategyFixed {
 		return PolicySpec{}, errors.New("fixed strategy requires an explicit policy")
 	}
-	if strategy > StrategyBurstFirst {
-		return PolicySpec{}, fmt.Errorf("unknown strategy %d", strategy)
+	policy := PolicySpec{
+		Rate:        entitlement.MaxRate,
+		Burst:       entitlement.MaxBurst,
+		Publishes:   entitlement.MaxPublishes,
+		Duration:    entitlement.MaxDuration,
+		Concurrency: entitlement.MaxConcurrency,
+		Strategy:    strategy,
 	}
-	if err := profiledef.Validate(profile); err != nil {
+	policy.Features = entitlement.Features &^ FeatureTimer
+	if err := ValidatePolicy(profile, policy, entitlement); err != nil {
 		return PolicySpec{}, err
 	}
-	if _, ok := durationDescriptorFor(entitlement.MaxDuration); !ok {
-		return PolicySpec{}, fmt.Errorf("unknown entitlement duration class %d", entitlement.MaxDuration)
-	}
-
-	policy := PolicySpec{Strategy: strategy}
-	order := allocationOrder(strategy)
-	for {
-		progressed := false
-		for _, dimension := range order {
-			candidate, changed := advancePolicy(policy, entitlement, dimension)
-			if !changed {
-				continue
-			}
-			if candidate.EnergyCost() > entitlement.Energy {
-				return policy, ValidatePolicy(profile, policy, entitlement)
-			}
-			if !ProfileCapabilities(profile).HasAll(candidate.Requirements()) {
-				continue
-			}
-			policy = candidate
-			progressed = true
-		}
-		if !progressed {
-			break
-		}
-	}
-	return policy, ValidatePolicy(profile, policy, entitlement)
+	return policy, nil
 }
 
-type allocationDimension uint8
-
-const (
-	allocationRate allocationDimension = iota
-	allocationBurst
-	allocationPublishes
-	allocationDuration
-	allocationConcurrency
-)
-
-func allocationOrder(strategy Strategy) []allocationDimension {
-	switch strategy {
-	case StrategyRateFirst:
-		return []allocationDimension{allocationRate, allocationRate, allocationBurst, allocationPublishes, allocationDuration, allocationConcurrency}
-	case StrategyDurationFirst:
-		return []allocationDimension{allocationDuration, allocationDuration, allocationRate, allocationPublishes, allocationBurst, allocationConcurrency}
-	case StrategyBurstFirst:
-		return []allocationDimension{allocationBurst, allocationBurst, allocationRate, allocationPublishes, allocationDuration, allocationConcurrency}
-	default:
-		return []allocationDimension{allocationRate, allocationDuration, allocationPublishes, allocationBurst, allocationConcurrency}
+// OrderedLimitIDs and OrderedDurationIDs expose semantic order without leaking
+// wire-ID ordering assumptions into callers.
+func OrderedLimitIDs() []LimitID {
+	descriptors := append([]limitDescriptor(nil), limitDescriptors...)
+	sort.Slice(descriptors, func(i, j int) bool { return descriptors[i].Value < descriptors[j].Value })
+	out := make([]LimitID, len(descriptors))
+	for i, descriptor := range descriptors {
+		out[i] = descriptor.ID
 	}
+	return out
 }
 
-func advancePolicy(policy PolicySpec, entitlement Entitlement, dimension allocationDimension) (PolicySpec, bool) {
-	candidate := policy
-	switch dimension {
-	case allocationRate:
-		next, ok := nextScaleClass(policy.Rate, entitlement.MaxRate)
-		candidate.Rate = next
-		return candidate, ok
-	case allocationBurst:
-		next, ok := nextScaleClass(policy.Burst, entitlement.MaxBurst)
-		candidate.Burst = next
-		return candidate, ok
-	case allocationPublishes:
-		next, ok := nextScaleClass(policy.Publishes, entitlement.MaxPublishes)
-		candidate.Publishes = next
-		return candidate, ok
-	case allocationDuration:
-		next, ok := nextDurationClass(policy.Duration, entitlement.MaxDuration)
-		candidate.Duration = next
-		return candidate, ok
-	case allocationConcurrency:
-		next, ok := nextScaleClass(policy.Concurrency, entitlement.MaxConcurrency)
-		candidate.Concurrency = next
-		return candidate, ok
-	default:
-		return policy, false
+func OrderedDurationIDs() []DurationID {
+	descriptors := append([]durationDescriptor(nil), durationDescriptors...)
+	sort.Slice(descriptors, func(i, j int) bool { return descriptors[i].Duration < descriptors[j].Duration })
+	out := make([]DurationID, len(descriptors))
+	for i, descriptor := range descriptors {
+		out[i] = descriptor.ID
 	}
-}
-
-func nextDurationClass(current, ceiling DurationClass) (DurationClass, bool) {
-	currentDuration := current.Duration()
-	ceilingDuration := ceiling.Duration()
-	for _, descriptor := range durationDescriptors {
-		if descriptor.Duration > currentDuration && descriptor.Duration <= ceilingDuration {
-			return descriptor.Class, true
-		}
-	}
-	return current, false
-}
-
-func nextScaleClass(current, ceiling ScaleClass) (ScaleClass, bool) {
-	maxValue := ceiling.Value()
-	if maxValue == 0 {
-		return current, false
-	}
-	currentValue := current.Value()
-	if currentValue >= maxValue {
-		return current, false
-	}
-	nextValue := uint64(1)
-	if currentValue > 0 {
-		nextValue = currentValue << 1
-	}
-	if nextValue > maxValue {
-		nextValue = maxValue
-	}
-	next, err := NewScaleClass(nextValue)
-	if err != nil {
-		return current, false
-	}
-	return next, true
-}
-
-func exceedsScale(value, ceiling ScaleClass) bool {
-	return value.Value() > ceiling.Value()
+	return out
 }
