@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,14 +23,32 @@ func main() {
 func run() int {
 	var profileList string
 	var timeout time.Duration
+	var printTimerRuntimeACL bool
 	flag.StringVar(&profileList, "profiles", "minimal,preflight,decisions,lifecycle", "comma-separated Redis Function profiles to load")
 	flag.DurationVar(&timeout, "timeout", 10*time.Second, "Redis bootstrap timeout")
+	flag.BoolVar(&printTimerRuntimeACL, "print-timer-runtime-acl", false, "print Redis ACL command grants required by timer FCALL entry points and exit")
 	flag.Parse()
 
 	profiles, err := parseProfiles(profileList)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
+	}
+
+	if printTimerRuntimeACL {
+		commands := timerRuntimeACLCommands(profiles)
+		if len(commands) == 0 {
+			fmt.Fprintln(os.Stderr, "selected profiles do not provide timer runtime commands")
+			return 2
+		}
+		for i, command := range commands {
+			if i > 0 {
+				fmt.Fprint(os.Stdout, " ")
+			}
+			fmt.Fprintf(os.Stdout, "+%s", command)
+		}
+		fmt.Fprintln(os.Stdout)
+		return 0
 	}
 
 	client, err := ratelimiter.NewClientFromEnv()
@@ -59,6 +78,21 @@ func run() int {
 
 	fmt.Fprintf(os.Stdout, "loaded %d rate limiter profile(s)\n", len(profiles))
 	return 0
+}
+
+func timerRuntimeACLCommands(profiles []ratelimiter.Profile) []string {
+	set := make(map[string]struct{})
+	for _, profile := range profiles {
+		for _, command := range ratelimiter.TimerRuntimeACLCommands(profile) {
+			set[command] = struct{}{}
+		}
+	}
+	commands := make([]string, 0, len(set))
+	for command := range set {
+		commands = append(commands, command)
+	}
+	sort.Strings(commands)
+	return commands
 }
 
 func parseProfiles(raw string) ([]ratelimiter.Profile, error) {
