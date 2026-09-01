@@ -74,6 +74,10 @@ func (s *RedisStore) Bootstrap(ctx context.Context, profiles ...Profile) error {
 			registrations = append(
 				registrations,
 				redisfunc.Registration{
+					FunctionName: profiledef.TimerArmAbsoluteFunctionName(profile),
+					WrapperName:  "timer_arm_absolute",
+				},
+				redisfunc.Registration{
 					FunctionName: profiledef.TimerTickFunctionName(profile),
 					WrapperName:  "timer_tick",
 				},
