@@ -1,2 +1,2 @@
 # Push pseudo-dispatch for the lifecycle-handoff qualification workflow.
-run=lifecycle-handoff-absolute-fcall-v1
+run=lifecycle-handoff-runtime-acl-v2
