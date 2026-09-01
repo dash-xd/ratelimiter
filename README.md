@@ -1,8 +1,21 @@
-# ratelimiter: lifecycle handoff line
+# ratelimiter
 
-This branch preserves the retained lifecycle-policy lineage used by Huram/Logma and extends it without renumbering durable `PolicyCode` values.
+`github.com/dash-xd/ratelimiter` is the authoritative public Go component for encoded rate/lifecycle policy and Redis-owned live enforcement state. `main` is the consolidation line. Historical branches may remain available for reproducibility and smoke-test dependencies, but new consumers should pin an exact `main` revision.
 
-`github.com/dash-xd/ratelimiter` is the public Go package. Redis/Lua mechanics live under `internal/`, executables live under `cmd/`, and executable behavior is selected through opaque profile packages.
+Redis/Lua mechanics live under `internal/`, executables live under `cmd/`, and executable behavior is selected through opaque profile packages.
+
+## Authority boundaries
+
+Ratelimiter owns:
+
+- stable `PolicyCode` encoding/decoding;
+- policy requirements, entitlement validation, and allocation;
+- opaque profile capability declarations;
+- Redis Function definitions for rate and lifecycle state;
+- absolute timer arm, tick, and idempotent cancel semantics;
+- the runtime Redis command contract needed to execute timer Functions.
+
+Ratelimiter does **not** own durable deployment registration, destructive cleanup authority, Terraform state, or proof that a resource is absent. Those belong to lifecycle supervisors such as Logma/Huram and their cleanup consumers.
 
 ## Policy model
 
@@ -25,15 +38,9 @@ EncodePolicy
 PolicyCode uint64
 ```
 
-`DurationClass` values are explicit stable wire codes. Semantic properties are separate descriptor data:
+`DurationClass` values are explicit stable wire codes. Semantic duration, allocation order, and energy weight are descriptor data. New human durations receive unused wire values rather than renumbering persisted codes.
 
-```text
-wire code   actual duration   policy energy weight
-```
-
-This means a new duration can be added between two existing durations without renumbering persisted codes. For example, `10m` is semantically between `5m` and `20m` but uses a newly allocated wire value rather than shifting the old `20m` code.
-
-Named lifecycle policies such as `smoke-10m` are human-facing aliases. They compile to `PolicySpec`, which compiles to the canonical `PolicyCode`. Callers should persist the code and original activation/deadline; names are navigation/configuration metadata.
+Named lifecycle policies such as `smoke-10m` are aliases that compile to canonical `PolicySpec` and `PolicyCode`. Durable owners persist the code plus original activation/deadline; names remain navigation/configuration metadata.
 
 ## Requirements and capabilities
 
@@ -49,7 +56,7 @@ ValidatePolicy
 selected Profile capabilities
 ```
 
-A field being representable in `PolicySpec` does not mean every profile can enforce it. In particular, Burst and Concurrency are reserved policy axes until a selected profile advertises `CapabilityBurst` or `CapabilityConcurrency`; validation must reject unsupported combinations.
+A field being representable in `PolicySpec` does not imply every profile can enforce it. Validation rejects unsupported Burst, Concurrency, timer, callback, or blocked-state requirements.
 
 ## Profile composition
 
@@ -60,13 +67,13 @@ A field being representable in `PolicySpec` does not mean every profile can enfo
 | `profile/decisions` | window ZSET + blocked streak | `allowed` or `blocked` | no |
 | `profile/lifecycle` | window ZSET + blocked streak + lifecycle keys | `preflight`, `allowed`/`blocked`, shutdown | yes |
 
-`ratelimiter.Profile` is opaque. Profile packages are the supported constructors, so callers do not couple themselves to Redis library/function names or internal behavior flags.
+`ratelimiter.Profile` is opaque. Profile packages are the supported constructors so callers do not couple themselves to Redis library/function names or internal flags.
 
 ## Redis lifecycle timer
 
-Lifecycle-capable profiles keep live timer state in Redis under explicit FCALL keys sharing the bucket's Redis Cluster hash tag.
+Lifecycle-capable profiles keep live timer state under explicit FCALL keys sharing the bucket's Redis Cluster hash tag.
 
-An initial preflight timer can be armed relative to Redis time through `Limiter.Check`. Durable lifecycle owners should persist the original activation plus `PolicyCode`, derive the absolute deadline once, and reconstruct live Redis state with `Limiter.ArmTimerAt`.
+Durable lifecycle owners persist original activation plus `PolicyCode`, derive the absolute deadline once, and reconstruct live Redis state with `Limiter.ArmTimerAt`.
 
 ```text
 persisted activated_at + decoded PolicyCode
@@ -81,35 +88,40 @@ persisted activated_at + decoded PolicyCode
  Redis ZSET deadline + callback payload hash
 ```
 
-Reconstruction with `reset=false` does not extend an existing timer. If a process dies after timer insertion but before callback-payload storage, a later reconstruction can repair the missing payload without changing the deadline.
-
-`Limiter.Tick` provides only a clock pulse. Redis owns due evaluation and dispatch. A due timer with missing/malformed callback state remains pending. A shutdown target with no Pub/Sub subscriber also remains pending. The timer is removed only after shutdown delivery succeeds for its configured targets.
-
-`Limiter.CancelTimer` is idempotent and removes both timer and callback context.
+`reset=false` preserves the first live deadline. Reconstruction may repair missing callback payload without extending the timer. `Limiter.Tick` is only a clock pulse; Redis owns due evaluation and dispatch. Missing/malformed callback state or a shutdown target with no subscriber leaves the timer pending. `Limiter.CancelTimer` is idempotent.
 
 ## Bootstrap and runtime authority
 
-`RedisStore.Bootstrap` uses `FUNCTION LOAD REPLACE` and should use bootstrap credentials distinct from restricted runtime credentials when practical. Runtime callers should receive only the FCALL/key/channel authority required by their selected profile and scope.
+`RedisStore.Bootstrap` performs `FUNCTION LOAD REPLACE` and therefore belongs to privileged bootstrap authority.
 
-Redis keys are passed explicitly to FCALL and are namespaced by `RedisConfig.Keyspace` plus the caller's bucket hash tag.
+Redis Functions execute under the caller ACL. Runtime authority is therefore **not** `+FCALL` alone: lifecycle callers need the exact command set returned by `TimerRuntimeACLCommands(profile)`, plus narrowly scoped key/channel patterns. That declaration excludes bootstrap/admin commands such as `FUNCTION`, `CONFIG`, and `ACL`.
+
+`WorkerKeyspace` builds literal scope-first Redis prefixes for independently ACL-scoped workers/subsystems. It rejects delimiters, glob characters, hash-tag characters, whitespace, empty segments, and silent normalization so an ACL namespace cannot accidentally broaden through user-supplied pattern syntax.
 
 ## Qualification
 
-The durable lifecycle line originates from ratelimiter commit:
+The lifecycle lineage originates from:
 
 ```text
 211738d48e33364431a4e4b0613ceac5ea593737
 Arm lifecycle timers from absolute deadlines
 ```
 
-The `lifecycle-handoff` branch extends that exact lineage. Its tests must include:
+The historical `lifecycle-handoff` and `preflight-lifecycle` branches remain useful provenance/test lines. `main` is the consolidated authority and carries the compatible implementation forward without rewriting those branches.
 
-- `PolicyCode` round trips;
+Required coverage includes:
+
+- `PolicyCode` round trips and reserved-bit rejection;
 - historical duration-byte fixtures;
 - semantic duration ordering independent of wire values;
 - named lifecycle policy compilation;
 - original-activation absolute deadline reconstruction;
 - entitlement/profile capability rejection;
-- Redis lifecycle timer and Logma integration behavior.
+- scale/allocation edge cases;
+- Redis lifecycle arm/tick/cancel behavior;
+- subscriber-required shutdown delivery;
+- runtime ACL execution with unrelated key/admin-command denial;
+- strict scope-first keyspace validation;
+- local exact Logma + ratelimiter + Redis composition smoke.
 
-The branch uses `.github/requests/test.txt` as its push pseudo-dispatch trigger. A code change is not considered qualified merely because it was committed; an exact successful test run must be recorded before Huram consumes the revision as a lifecycle component.
+`.github/requests/test.txt` is the push pseudo-dispatch trigger. A source commit is not qualified merely because it exists; consumers should pin a revision that is contained in an exact successful qualification run. The local composition job pins the Logma side by immutable SHA and uses a Go workspace so Logma runs against the ratelimiter checkout being qualified rather than whatever ratelimiter version its `go.mod` happened to record.
