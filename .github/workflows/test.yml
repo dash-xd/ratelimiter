@@ -3,11 +3,12 @@ name: test
 on:
   push:
     branches:
+      - main
+      - consolidate-main
       - preflight-lifecycle
       - lifecycle-handoff
     paths:
       - ".github/requests/test.txt"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,11 +33,11 @@ jobs:
           ref: claude/main
           path: .deps/logma-serverless
 
-      - name: Checkout stateful Logma
+      - name: Checkout lifecycle-qualified Logma
         uses: actions/checkout@v7
         with:
           repository: xd-dash/logma
-          ref: main
+          ref: b4aa317263ca57f5fb768e13ac1fc123dd040e82
           path: .deps/logma
 
       - name: Set up Go
@@ -70,7 +71,7 @@ jobs:
               --maxmemory-policy noeviction \
               --daemonize yes
           else
-            docker run -d --rm --name ratelimiter-redis -p 6380:6379 redis:7-alpine \
+            docker run -d --rm --name ratelimiter-redis -p 6380:6379 redis:7.2.5 \
               redis-server --save "" --appendonly no --maxmemory 40mb --maxmemory-policy noeviction
           fi
 
@@ -83,16 +84,23 @@ jobs:
           echo "Redis did not start" >&2
           exit 1
 
-      - name: Start stateful Logma
+      - name: Compose ratelimiter and Logma workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          go work init . .deps/logma
+
+      - name: Start stateful Logma with workspace ratelimiter
         shell: bash
         env:
           REDIS_URI: 127.0.0.1:6380
           API_KEY: ratelimiter-test
+          LOGMA_RATELIMITER_BOOTSTRAP: internal
         run: |
           set -euo pipefail
           cd .deps/logma
           nohup go run ./cmd/api 8081 >/tmp/ratelimiter-logma.log 2>&1 &
-          for _ in $(seq 1 120); do
+          for _ in $(seq 1 180); do
             if (echo > /dev/tcp/127.0.0.1/8081) >/dev/null 2>&1; then
               exit 0
             fi
@@ -102,7 +110,7 @@ jobs:
           echo "Logma did not start" >&2
           exit 1
 
-      - name: Logma integrations
+      - name: Ratelimiter Redis and Logma integrations
         env:
           RATELIMITER_REDIS_ADDR: 127.0.0.1:6380
           RATELIMITER_LOGMA_URL: http://127.0.0.1:8081
