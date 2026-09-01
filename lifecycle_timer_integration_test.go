@@ -5,7 +5,9 @@ package ratelimiter_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +125,81 @@ func TestAbsoluteLifecycleTimerFCALLContract(t *testing.T) {
 	}
 }
 
+func TestLifecycleTimerRuntimeACLDescriptorIsExecutable(t *testing.T) {
+	ctx, admin := lifecycleTimerRedis(t)
+	if err := admin.FlushDB(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		username = "ratelimiter-lifecycle-runtime-test"
+		password = "ratelimiter-lifecycle-runtime-password"
+		bucket   = "deployment:acl-runtime"
+		keyspace = "test:lifecycle:acl"
+		channel  = "test:lifecycle:acl:shutdown"
+	)
+	resolver := ratelimiter.StaticTargets(map[ratelimiter.Stage][]ratelimiter.Target{
+		ratelimiter.StageShutdown: {{Channel: channel, Purpose: ratelimiter.PurposeLifecycleControl}},
+	})
+	profile := lifecycleprofile.New(resolver)
+	adminStore, err := ratelimiter.NewRedisStore(admin, ratelimiter.RedisConfig{Keyspace: keyspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adminStore.Bootstrap(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+
+	acl := []any{"ACL", "SETUSER", username, "reset", "on", ">" + password, "-@all", "+ping"}
+	for _, command := range ratelimiter.TimerRuntimeACLCommands(profile) {
+		acl = append(acl, "+"+command)
+	}
+	acl = append(acl, "~"+keyspace+":*", "&"+channel)
+	if err := admin.Do(ctx, acl...).Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = admin.Do(context.Background(), "ACL", "DELUSER", username).Err() })
+
+	runtime := redis.NewClient(&redis.Options{Addr: admin.Options().Addr, Username: username, Password: password})
+	t.Cleanup(func() { _ = runtime.Close() })
+	if err := runtime.Ping(ctx).Err(); err != nil {
+		t.Fatalf("runtime ping: %v", err)
+	}
+	if err := runtime.Do(ctx, "FUNCTION", "LIST").Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("runtime FUNCTION LIST = %v, want NOPERM", err)
+	}
+	if err := runtime.HSet(ctx, "test:unrelated:acl-runtime", "x", "y").Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("runtime unrelated HSET = %v, want NOPERM", err)
+	}
+
+	store, err := ratelimiter.NewRedisStore(runtime, ratelimiter.RedisConfig{Keyspace: keyspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	limiter, err := store.Limiter(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := ratelimiter.Input{
+		Bucket: bucket,
+		Request: ratelimiter.Request{ID: "acl-runtime", Subject: "deployment", Operation: "lifecycle.shutdown", Resource: "acl-runtime"},
+	}
+	deadline := time.Now().UTC().Add(-time.Millisecond)
+	if armed, err := limiter.ArmTimerAt(ctx, in, deadline, false); err != nil || !armed {
+		t.Fatalf("restricted runtime arm = %v, %v", armed, err)
+	}
+	result, err := limiter.Tick(ctx, bucket)
+	if err != nil {
+		t.Fatalf("restricted runtime tick: %v", err)
+	}
+	if result.Dispatched != 0 || result.Pending != 1 {
+		t.Fatalf("restricted runtime tick without subscriber = %#v", result)
+	}
+	if removed, err := limiter.CancelTimer(ctx, bucket); err != nil || !removed {
+		t.Fatalf("restricted runtime cancel = %v, %v", removed, err)
+	}
+}
+
 func TestLifecycleTimerRequiresSubscriberAndCancelIsIdempotent(t *testing.T) {
 	ctx, client := lifecycleTimerRedis(t)
 	if err := client.FlushDB(ctx).Err(); err != nil {
@@ -198,6 +275,9 @@ func lifecycleTimerRedis(t *testing.T) (context.Context, *redis.Client) {
 	t.Cleanup(cancel)
 	client := redis.NewClient(&redis.Options{Addr: addr})
 	t.Cleanup(func() { _ = client.Close() })
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Fatalf("ping test Redis %s: %v", addr, err)
+	}
 	return ctx, client
 }
 
@@ -211,3 +291,5 @@ func assertTimerScore(t *testing.T, ctx context.Context, client *redis.Client, k
 		t.Fatalf("timer score = %d, want %d", int64(score), want)
 	}
 }
+
+var _ = fmt.Sprintf
