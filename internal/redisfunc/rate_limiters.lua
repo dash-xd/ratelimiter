@@ -275,6 +275,43 @@ local function arm_timer(context, raw_context, timer_key, payload_key, after_ms,
     end
 end
 
+local function timer_arm_absolute(keys, args)
+    if #keys ~= 2 then
+        error("absolute timer arm requires timer and payload keys")
+    end
+
+    local timer_key = keys[1]
+    local payload_key = keys[2]
+    local raw_context = args[1]
+    local deadline_ms = require_positive_integer(args[2], "deadline_unix_ms")
+    local reset = require_boolean_integer(args[3], "timer_reset")
+    local context = decode_context(raw_context)
+    local targets = context.targets and context.targets.shutdown
+    if not targets or #targets == 0 then
+        error("absolute shutdown timer requires at least one shutdown target")
+    end
+
+    require_key_type(timer_key, "zset")
+    require_key_type(payload_key, "hash")
+
+    if reset then
+        redis.call("ZADD", timer_key, deadline_ms, TIMER_MEMBER)
+        redis.call("HSET", payload_key, TIMER_MEMBER, raw_context)
+        return {1}
+    end
+
+    local added = redis.call("ZADD", timer_key, "NX", deadline_ms, TIMER_MEMBER)
+    if added == 1 then
+        redis.call("HSET", payload_key, TIMER_MEMBER, raw_context)
+        return {1}
+    end
+
+    if redis.call("HEXISTS", payload_key, TIMER_MEMBER) == 0 then
+        redis.call("HSET", payload_key, TIMER_MEMBER, raw_context)
+    end
+    return {0}
+end
+
 local function execute(keys, args, mode)
     local publishes = mode ~= "minimal"
     local tracks_blocked = mode == "decisions" or mode == "lifecycle"
