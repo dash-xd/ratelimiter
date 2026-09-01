@@ -12,7 +12,6 @@ import (
 const PolicyVersion1 uint8 = 1
 
 type PolicyCode uint64
-
 type PolicyFeature uint16
 
 const (
@@ -87,7 +86,32 @@ const (
 	Duration7D
 	Duration14D
 	Duration30D
+
+	// Duration10M is appended rather than inserted between Duration5M and
+	// Duration20M so every existing encoded PolicyCode keeps its original
+	// duration byte. Duration ordering therefore uses real time.Duration values,
+	// not enum ordinals.
+	Duration10M
 )
+
+var orderedDurationClasses = []DurationClass{
+	DurationNone,
+	Duration1S,
+	Duration3S,
+	Duration10S,
+	Duration30S,
+	Duration1M,
+	Duration5M,
+	Duration10M,
+	Duration20M,
+	Duration1H,
+	Duration6H,
+	Duration24H,
+	Duration3D,
+	Duration7D,
+	Duration14D,
+	Duration30D,
+}
 
 func (c DurationClass) Duration() time.Duration {
 	switch c {
@@ -105,6 +129,8 @@ func (c DurationClass) Duration() time.Duration {
 		return time.Minute
 	case Duration5M:
 		return 5 * time.Minute
+	case Duration10M:
+		return 10 * time.Minute
 	case Duration20M:
 		return 20 * time.Minute
 	case Duration1H:
@@ -126,8 +152,20 @@ func (c DurationClass) Duration() time.Duration {
 	}
 }
 
+func (c DurationClass) energyMagnitude() uint16 {
+	if c == DurationNone {
+		return 0
+	}
+	// Preserve every historical duration's energy contribution. The new 10m
+	// class shares the 20m contribution rather than renumbering older codes.
+	if c == Duration10M {
+		return uint16(Duration20M)
+	}
+	return uint16(c)
+}
+
 func DurationClassFor(duration time.Duration) (DurationClass, error) {
-	for class := DurationNone; class <= Duration30D; class++ {
+	for _, class := range orderedDurationClasses {
 		if class.Duration() == duration {
 			return class, nil
 		}
@@ -146,7 +184,7 @@ type PolicySpec struct {
 }
 
 func (p PolicySpec) Validate() error {
-	if p.Duration > Duration30D {
+	if p.Duration != DurationNone && p.Duration.Duration() == 0 {
 		return fmt.Errorf("unknown duration class %d", p.Duration)
 	}
 	if p.Strategy > StrategyBurstFirst {
@@ -197,7 +235,7 @@ func (p PolicySpec) EnergyCost() uint16 {
 	return p.Rate.energyMagnitude()*3 +
 		p.Burst.energyMagnitude() +
 		p.Publishes.energyMagnitude()*2 +
-		uint16(p.Duration)*2 +
+		p.Duration.energyMagnitude()*2 +
 		p.Concurrency.energyMagnitude()*4
 }
 
@@ -278,7 +316,7 @@ func (e Entitlement) Allows(policy PolicySpec) error {
 	if exceedsScale(policy.Publishes, e.MaxPublishes) {
 		return errors.New("policy publish limit exceeds entitlement ceiling")
 	}
-	if policy.Duration > e.MaxDuration {
+	if policy.Duration.Duration() > e.MaxDuration.Duration() {
 		return errors.New("policy duration exceeds entitlement ceiling")
 	}
 	if exceedsScale(policy.Concurrency, e.MaxConcurrency) {
@@ -410,11 +448,9 @@ func advancePolicy(policy PolicySpec, entitlement Entitlement, dimension allocat
 		candidate.Publishes = next
 		return candidate, ok
 	case allocationDuration:
-		if policy.Duration >= entitlement.MaxDuration {
-			return policy, false
-		}
-		candidate.Duration++
-		return candidate, true
+		next, ok := nextDurationClass(policy.Duration, entitlement.MaxDuration)
+		candidate.Duration = next
+		return candidate, ok
 	case allocationConcurrency:
 		next, ok := nextScaleClass(policy.Concurrency, entitlement.MaxConcurrency)
 		candidate.Concurrency = next
@@ -422,6 +458,18 @@ func advancePolicy(policy PolicySpec, entitlement Entitlement, dimension allocat
 	default:
 		return policy, false
 	}
+}
+
+func nextDurationClass(current, ceiling DurationClass) (DurationClass, bool) {
+	currentDuration := current.Duration()
+	ceilingDuration := ceiling.Duration()
+	for _, candidate := range orderedDurationClasses {
+		duration := candidate.Duration()
+		if duration > currentDuration && duration <= ceilingDuration {
+			return candidate, true
+		}
+	}
+	return current, false
 }
 
 func nextScaleClass(current, ceiling ScaleClass) (ScaleClass, bool) {
