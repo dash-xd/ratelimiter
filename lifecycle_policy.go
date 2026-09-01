@@ -5,8 +5,9 @@ import (
 	"time"
 )
 
-// LifecyclePolicyName is the human-facing name of a fixed lifecycle policy.
-// The encoded PolicyCode remains the canonical machine declaration.
+// LifecyclePolicyName is a stable human-facing alias. It is not part of the
+// PolicyCode wire format; the compiled PolicyCode is the canonical machine
+// declaration persisted by lifecycle owners.
 type LifecyclePolicyName string
 
 const (
@@ -20,9 +21,20 @@ const (
 	LifecycleSandbox30D LifecyclePolicyName = "sandbox-month"
 )
 
+var namedLifecycleDurations = map[LifecyclePolicyName]DurationClass{
+	LifecycleSmoke30S:   Duration30S,
+	LifecycleSmoke1M:    Duration1M,
+	LifecycleSmoke10M:   Duration10M,
+	LifecycleSandbox1D:  Duration24H,
+	LifecycleSandbox3D:  Duration3D,
+	LifecycleSandbox7D:  Duration7D,
+	LifecycleSandbox14D: Duration14D,
+	LifecycleSandbox30D: Duration30D,
+}
+
 // LifecyclePolicy returns an explicit fixed timer policy. The policy says when
-// a lifecycle expires; the caller separately supplies the deployment identity
-// and shutdown target that determine what receives the lifecycle signal.
+// a lifecycle expires; the caller separately supplies deployment identity and
+// shutdown routing, which determine what may receive the lifecycle signal.
 func LifecyclePolicy(duration DurationClass) (PolicySpec, error) {
 	policy := PolicySpec{
 		Duration: duration,
@@ -38,37 +50,20 @@ func LifecyclePolicy(duration DurationClass) (PolicySpec, error) {
 	return policy, nil
 }
 
-// NamedLifecyclePolicy compiles a readable lifecycle name into the exact
-// PolicySpec that is encoded and persisted by callers.
+// NamedLifecyclePolicy compiles a readable alias into the exact PolicySpec that
+// is encoded and persisted. Adding or reordering aliases never changes wire
+// values; only DurationClass's explicit stable codes do that.
 func NamedLifecyclePolicy(name LifecyclePolicyName) (PolicySpec, error) {
-	var duration DurationClass
-	switch name {
-	case LifecycleSmoke30S:
-		duration = Duration30S
-	case LifecycleSmoke1M:
-		duration = Duration1M
-	case LifecycleSmoke10M:
-		duration = Duration10M
-	case LifecycleSandbox1D:
-		duration = Duration24H
-	case LifecycleSandbox3D:
-		duration = Duration3D
-	case LifecycleSandbox7D:
-		duration = Duration7D
-	case LifecycleSandbox14D:
-		duration = Duration14D
-	case LifecycleSandbox30D:
-		duration = Duration30D
-	default:
+	duration, ok := namedLifecycleDurations[name]
+	if !ok {
 		return PolicySpec{}, fmt.Errorf("unknown lifecycle policy %q", name)
 	}
 	return LifecyclePolicy(duration)
 }
 
 // LifecycleDeadline derives the absolute lifecycle deadline from the original
-// activation time and encoded policy. Reconstructing a timer after Redis or a
-// host restarts must call this with the original activation time; callers must
-// not rebase the duration on the restart time.
+// activation time and encoded policy. Reconstruction must use the original
+// activation time; callers must never rebase a retained lifecycle on restart.
 func LifecycleDeadline(activatedAt time.Time, code PolicyCode) (time.Time, error) {
 	policy, err := DecodePolicy(code)
 	if err != nil {
