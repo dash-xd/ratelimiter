@@ -10,11 +10,12 @@ import (
 type LifecyclePolicyName string
 
 const (
-	LifecycleSmoke30S  LifecyclePolicyName = "smoke-30s"
-	LifecycleSmoke1M   LifecyclePolicyName = "smoke-minute"
-	LifecycleSandbox1D LifecyclePolicyName = "sandbox-day"
-	LifecycleSandbox3D LifecyclePolicyName = "sandbox-3d"
-	LifecycleSandbox7D LifecyclePolicyName = "sandbox-week"
+	LifecycleSmoke30S   LifecyclePolicyName = "smoke-30s"
+	LifecycleSmoke1M    LifecyclePolicyName = "smoke-minute"
+	LifecycleSmoke10M   LifecyclePolicyName = "smoke-10m"
+	LifecycleSandbox1D  LifecyclePolicyName = "sandbox-day"
+	LifecycleSandbox3D  LifecyclePolicyName = "sandbox-3d"
+	LifecycleSandbox7D  LifecyclePolicyName = "sandbox-week"
 	LifecycleSandbox14D LifecyclePolicyName = "sandbox-14d"
 	LifecycleSandbox30D LifecyclePolicyName = "sandbox-month"
 )
@@ -46,6 +47,8 @@ func NamedLifecyclePolicy(name LifecyclePolicyName) (PolicySpec, error) {
 		duration = Duration30S
 	case LifecycleSmoke1M:
 		duration = Duration1M
+	case LifecycleSmoke10M:
+		duration = Duration10M
 	case LifecycleSandbox1D:
 		duration = Duration24H
 	case LifecycleSandbox3D:
