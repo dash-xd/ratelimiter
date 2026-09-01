@@ -3,15 +3,16 @@ package ratelimiter
 import (
 	"errors"
 	"strings"
+	"unicode"
 )
 
-var errInvalidKeyspaceSegment = errors.New("keyspace segment contains reserved Redis delimiter, glob, hash-tag, or whitespace characters")
+var errInvalidKeyspaceSegment = errors.New("keyspace segment contains reserved Redis delimiter, glob, escape, hash-tag, or whitespace characters")
 
 // WorkerKeyspace builds a Redis prefix owned by one independently ACL-scoped
 // worker or subsystem. Every segment is validated as a literal namespace
 // component so the returned prefix can safely be embedded in Redis ACL key
-// patterns without broadening authority through glob characters, hash tags,
-// delimiters, or whitespace.
+// patterns without broadening authority through glob characters, escapes,
+// hash tags, delimiters, or whitespace.
 //
 // The returned shape is:
 //
@@ -22,7 +23,7 @@ func WorkerKeyspace(scope, subsystem string, resource ...string) (string, error)
 		if part == "" {
 			return "", errors.New("keyspace segments must be non-empty")
 		}
-		if part != strings.TrimSpace(part) || strings.ContainsAny(part, ":*?[]{} \t\r\n") {
+		if strings.ContainsAny(part, ":*?[]{}\\") || strings.IndexFunc(part, unicode.IsSpace) >= 0 {
 			return "", errInvalidKeyspaceSegment
 		}
 		parts = append(parts, part)
