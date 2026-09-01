@@ -1,2 +1,1 @@
-# Push pseudo-dispatch for the lifecycle-handoff qualification workflow.
-run=lifecycle-handoff-runtime-acl-v2
+lifecycle-handoff runtime ACL integration qualification
