@@ -14,6 +14,9 @@ func TestLifecycleDurationClassesRoundTripThroughPolicyCode(t *testing.T) {
 	}{
 		{ratelimiter.Duration30S, 30 * time.Second},
 		{ratelimiter.Duration1M, time.Minute},
+		{ratelimiter.Duration5M, 5 * time.Minute},
+		{ratelimiter.Duration10M, 10 * time.Minute},
+		{ratelimiter.Duration20M, 20 * time.Minute},
 		{ratelimiter.Duration24H, 24 * time.Hour},
 		{ratelimiter.Duration3D, 3 * 24 * time.Hour},
 		{ratelimiter.Duration7D, 7 * 24 * time.Hour},
@@ -43,6 +46,42 @@ func TestLifecycleDurationClassesRoundTripThroughPolicyCode(t *testing.T) {
 	}
 }
 
+func TestTenMinuteDurationDoesNotRenumberExistingPolicyCodes(t *testing.T) {
+	// These numeric duration bytes were already persisted before 10m existed.
+	// They must remain stable because PolicyCode is durable lifecycle intent.
+	want := map[ratelimiter.DurationClass]uint64{
+		ratelimiter.Duration5M:  6,
+		ratelimiter.Duration20M: 7,
+		ratelimiter.Duration1H:  8,
+		ratelimiter.Duration30D: 14,
+	}
+	for class, durationByte := range want {
+		policy, err := ratelimiter.LifecyclePolicy(class)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, err := ratelimiter.EncodePolicy(policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := (uint64(code) >> 24) & 0xff; got != durationByte {
+			t.Fatalf("duration byte for %v = %d, want historical %d", class, got, durationByte)
+		}
+	}
+
+	policy, err := ratelimiter.LifecyclePolicy(ratelimiter.Duration10M)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := ratelimiter.EncodePolicy(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := (uint64(code) >> 24) & 0xff; got != 15 {
+		t.Fatalf("10m duration byte = %d, want appended code 15", got)
+	}
+}
+
 func TestNamedLifecyclePoliciesCompileToFixedDurations(t *testing.T) {
 	cases := []struct {
 		name ratelimiter.LifecyclePolicyName
@@ -50,6 +89,7 @@ func TestNamedLifecyclePoliciesCompileToFixedDurations(t *testing.T) {
 	}{
 		{ratelimiter.LifecycleSmoke30S, ratelimiter.Duration30S},
 		{ratelimiter.LifecycleSmoke1M, ratelimiter.Duration1M},
+		{ratelimiter.LifecycleSmoke10M, ratelimiter.Duration10M},
 		{ratelimiter.LifecycleSandbox1D, ratelimiter.Duration24H},
 		{ratelimiter.LifecycleSandbox30D, ratelimiter.Duration30D},
 	}
