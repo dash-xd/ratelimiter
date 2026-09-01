@@ -35,11 +35,11 @@ jobs:
           ref: 4ce1fb9a70adf4f88658fe51b8dfcfe7fbd6e934
           path: .deps/logma-serverless
 
-      - name: Checkout lifecycle-qualified Logma
+      - name: Checkout policy-v2 Logma consumer
         uses: actions/checkout@v7
         with:
           repository: xd-dash/logma
-          ref: b4aa317263ca57f5fb768e13ac1fc123dd040e82
+          ref: 23599afd0cb5d23711037728360481d90d0cb8c0
           path: .deps/logma
 
       - name: Set up Go
