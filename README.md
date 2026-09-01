@@ -77,9 +77,11 @@ Entitlement
 
 That maps cleanly to tiered plus usage-based pricing. A tier can grant, for example, a sustained 100 requests/second and burst capacity 500, while metering separately records actual consumption for usage billing.
 
-Burst remains a first-class policy axis, separate from sustained rate. Representation is not the same as enforcement: a selected profile must advertise `CapabilityBurst` before a burst-bearing policy can execute. Until a profile implements burst, validation fails rather than pretending the ceiling is enforced. The same rule applies to concurrency.
+Burst is a first-class policy axis and now has a corresponding `profile/burst` enforcement path. `Limiter.CheckBurst` uses an atomic Redis token bucket with Redis `TIME` as the authoritative clock. Token state is integer fixed-point: one token is 1000 units, so an `R` requests/second rate refills exactly `R` units per millisecond without persistent floating-point state. The bucket starts full, has an explicit capacity ceiling, and idle state expires only after a safe refill interval.
 
-This is a security property: a policy cannot claim a capability that its runtime path does not actually implement.
+The burst Redis Function has its own minimal runtime ACL declaration through `BurstRuntimeACLCommands`: `FCALL`, `TIME`, `HMGET`, `HSET`, and `PEXPIRE`. It carries no bootstrap/admin authority.
+
+Representation is still not the same as enforcement. A selected profile must advertise the capability required by a policy; unsupported combinations fail validation instead of pretending to enforce them. Concurrency remains representable but has no enforcing profile yet.
 
 ## Requirements and capabilities
 
@@ -102,6 +104,7 @@ A field being representable in `PolicySpec` does not imply every profile can enf
 | Import | Redis state | Publishes | Lifecycle timers |
 | --- | --- | --- | --- |
 | `profile/minimal` | window ZSET | nothing | no |
+| `profile/burst` | token-bucket HASH | nothing | no |
 | `profile/preflight` | window ZSET + lifecycle keys | `preflight` | yes |
 | `profile/decisions` | window ZSET + blocked streak | `allowed` or `blocked` | no |
 | `profile/lifecycle` | window ZSET + blocked streak + lifecycle keys | `preflight`, `allowed`/`blocked`, shutdown | yes |
@@ -145,6 +148,6 @@ The objective is not to avoid mathematical structure. It is to keep each useful 
 
 ## Qualification
 
-Required coverage includes v2 round trips/reserved-bit rejection, unknown descriptor rejection, v1 migration fixtures including historical `10m = 15`, independent rate/count/duration semantics, named lifecycle compilation, exact deadline reconstruction, entitlement and profile-capability rejection, Redis lifecycle behavior, subscriber-required shutdown delivery, runtime ACL denial tests, strict keyspace validation, and exact Logma + ratelimiter + Redis composition.
+Required coverage includes v2 round trips/reserved-bit rejection, unknown descriptor rejection, v1 migration fixtures including historical `10m = 15`, independent rate/count/duration semantics, named lifecycle compilation, exact deadline reconstruction, entitlement and profile-capability rejection, Redis token-bucket burst capacity/refill behavior, Redis lifecycle behavior, subscriber-required shutdown delivery, runtime ACL denial tests, strict keyspace validation, and exact Logma + ratelimiter + Redis composition.
 
 `.github/requests/test.txt` is the push pseudo-dispatch trigger. A source commit is not qualified merely because it exists; consumers should pin a revision contained in an exact successful qualification run.
