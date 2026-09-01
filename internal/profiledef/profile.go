@@ -114,17 +114,6 @@ func FunctionName(d Definition) string {
 	}
 }
 
-func TimerArmAbsoluteFunctionName(d Definition) string {
-	switch d.kind {
-	case PreflightKind:
-		return "dashxd_ratelimit_preflight_timer_arm_absolute_v1"
-	case LifecycleKind:
-		return "dashxd_ratelimit_lifecycle_timer_arm_absolute_v1"
-	default:
-		return ""
-	}
-}
-
 func TimerTickFunctionName(d Definition) string {
 	switch d.kind {
 	case PreflightKind:
