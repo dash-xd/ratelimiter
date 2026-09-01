@@ -6,29 +6,21 @@ Redis/Lua mechanics live under `internal/`, executables live under `cmd/`, and e
 
 ## Authority boundaries
 
-Ratelimiter owns:
+Ratelimiter owns versioned `PolicyCode` encoding/decoding, explicit policy descriptors and validation, entitlement ceilings, profile capability checks, Redis Function definitions for rate/lifecycle state, absolute timer semantics, and the runtime Redis command contract needed by those Functions.
 
-- versioned `PolicyCode` encoding/decoding;
-- explicit policy descriptors and validation;
-- entitlement ceilings and profile capability checks;
-- Redis Function definitions for rate and lifecycle state;
-- absolute timer arm, tick, and idempotent cancel semantics;
-- the runtime Redis command contract needed to execute timer Functions.
-
-Ratelimiter does **not** own pricing, billing, durable deployment registration, destructive cleanup authority, Terraform state, or proof that a resource is absent. Commercial plans may map to ratelimiter entitlements, while usage accounting remains an independent concern.
+Ratelimiter does **not** own pricing, billing, durable deployment registration, destructive cleanup authority, Terraform state, or proof that a resource is absent. Commercial plans may map to ratelimiter entitlements while usage accounting remains independent.
 
 ## Policy v2
 
-Policy v2 deliberately favors explicit data over compressed mathematical inference.
+V2 deliberately favors explicit domain data over compressed mathematical inference.
 
 ```text
 PolicySpec
-  rate          LimitID
-  burst         LimitID
-  publishes     LimitID
+  rate          RateID       // sustained requests/second
+  burst         CountID      // burst capacity
+  publishes     CountID      // total publish ceiling
   duration      DurationID
-  concurrency   LimitID
-  strategy      Strategy
+  concurrency   CountID
   features      PolicyFeature bitset
         |
         v
@@ -38,59 +30,60 @@ EncodePolicy
 PolicyCode uint64
 ```
 
-`LimitID` and `DurationID` are opaque stable wire identifiers. Their numeric IDs have no magnitude or ordering semantics. Descriptor registries map IDs to concrete limits and durations, and semantic ordering is derived from descriptor values.
+`RateID`, `CountID`, and `DurationID` are separate opaque stable wire identities. Their numeric IDs have no ordering semantics. Descriptor registries map them to actual requests/second, counts, and wall-clock durations.
 
-Adding a new supported value means assigning a new unused ID and adding a descriptor. Existing IDs do not move.
+This separation is intentional: a rate has units and must not be treated as the same quantity as a burst capacity, publish total, or concurrency count.
 
-`ScaleClass` and `DurationClass` remain source-compatibility aliases during migration, but v2 does not use the old exponent/mantissa scale encoding and does not treat duration codes as ordinal enums.
+Adding a supported value means assigning a new unused ID in the appropriate registry. Existing IDs never move. Semantic comparisons use descriptor values, never raw IDs.
+
+`LimitID`, `ScaleClass`, and `DurationClass` remain migration aliases where practical, but v2 does not use the old exponent/mantissa scale encoding and does not treat duration IDs as ordinal enums.
 
 ### Wire layout
 
-Policy v2 retains the compact 64-bit envelope:
+V2 keeps the compact 64-bit envelope:
 
 ```text
-bits  0..7   rate LimitID
-bits  8..15  burst LimitID
-bits 16..23  publishes LimitID
+bits  0..7   rate RateID
+bits  8..15  burst CountID
+bits 16..23  publishes CountID
 bits 24..31  duration DurationID
-bits 32..39  concurrency LimitID
-bits 40..43  strategy
-bits 44..55  features
+bits 32..39  concurrency CountID
+bits 40..55  feature mask
 bits 56..59  reserved, must be zero
 bits 60..63  version
 ```
 
 New encodes use version `2`.
 
-The v1 decoder is migration-only. It translates legacy duration codes explicitly and decodes the old exponent/mantissa limit representation to its actual numeric value before looking that value up in the v2 registry. If no exact v2 descriptor exists, migration fails closed rather than silently changing the policy.
+There is deliberately no pricing tier, allocation strategy, or synthetic resource currency in the wire code.
 
-For example, the early v1 duration protocol had `20m = 7` and later appended `10m = 15`. V2 is free to use the clean descriptor IDs `10m = 7`, `20m = 8` because the version field disambiguates the formats.
+The v1 decoder is migration-only. It decodes the old exponent/mantissa scale field into the actual numeric value and then looks up that value in the appropriate v2 registry. Legacy duration codes are translated explicitly. If no exact v2 descriptor exists, migration fails closed rather than silently changing the policy.
 
-## Entitlements, tiers, and burst
+For example, v1 had `20m = 7` and later appended `10m = 15`. V2 uses `10m = 7` and `20m = 8`; the version field disambiguates them.
 
-V2 removes the synthetic cross-axis `EnergyCost` allocator. A plan or security boundary is represented by explicit independent ceilings:
+## Entitlements, tiers, usage, and burst
+
+V2 removes the synthetic cross-axis `EnergyCost` allocator. A plan/security boundary is a set of explicit independent ceilings:
 
 ```text
 Entitlement
   features
-  max rate
-  max burst
+  max sustained requests/second
+  max burst capacity
   max publishes
   max duration
   max concurrency
 ```
 
-This keeps tiered and usage-based pricing composable instead of embedding pricing math in the wire protocol. A commercial tier can, for example, grant a sustained rate of 100 and a burst ceiling of 500 while usage accounting independently records actual consumption.
+That maps cleanly to tiered plus usage-based pricing. A tier can grant, for example, a sustained 100 requests/second and burst capacity 500, while metering separately records actual consumption for usage billing.
 
-Burst is intentionally a separate axis from sustained rate. Representation and entitlement validation do not imply runtime support: a selected profile must advertise `CapabilityBurst` before a burst-bearing policy can be used. Profiles that do not enforce burst fail validation rather than pretending to support it.
+Burst remains a first-class policy axis, separate from sustained rate. Representation is not the same as enforcement: a selected profile must advertise `CapabilityBurst` before a burst-bearing policy can execute. Until a profile implements burst, validation fails rather than pretending the ceiling is enforced. The same rule applies to concurrency.
 
-The same rule applies to concurrency and other optional axes.
-
-`Strategy` remains a policy/runtime hint. It is no longer used to derive pricing, entitlement, or a synthetic resource currency.
+This is a security property: a policy cannot claim a capability that its runtime path does not actually implement.
 
 ## Requirements and capabilities
 
-Policy requirements and executable profile capabilities are separate axes.
+Policy requirements and executable profile capabilities remain separate:
 
 ```text
 PolicySpec requirements
@@ -102,7 +95,7 @@ ValidatePolicy
 selected Profile capabilities
 ```
 
-A field being representable in `PolicySpec` does not imply every profile can enforce it. Validation rejects unsupported burst, concurrency, timer, callback, or blocked-state requirements.
+A field being representable in `PolicySpec` does not imply every profile can enforce it.
 
 ## Profile composition
 
@@ -117,11 +110,9 @@ A field being representable in `PolicySpec` does not imply every profile can enf
 
 ## Lifecycle policies
 
-Named lifecycle policies such as `smoke-10m` are aliases that compile to canonical `PolicySpec` and versioned `PolicyCode`. Durable owners persist the code plus original activation/deadline; names remain navigation/configuration metadata.
+Named lifecycle policies such as `smoke-10m` are human aliases that compile to canonical `PolicySpec` and versioned `PolicyCode`. Durable owners persist the code plus original activation/deadline; names remain navigation/configuration metadata.
 
-Lifecycle-capable profiles keep live timer state under explicit FCALL keys sharing the bucket's Redis Cluster hash tag.
-
-Durable lifecycle owners persist original activation plus `PolicyCode`, derive the absolute deadline once, and reconstruct live Redis state with `Limiter.ArmTimerAt`.
+Durable lifecycle owners persist original activation plus `PolicyCode`, derive the absolute deadline once, and reconstruct live Redis state with `Limiter.ArmTimerAt`:
 
 ```text
 persisted activated_at + decoded PolicyCode
@@ -140,34 +131,20 @@ persisted activated_at + decoded PolicyCode
 
 ## Bootstrap and runtime authority
 
-`RedisStore.Bootstrap` performs `FUNCTION LOAD REPLACE` and therefore belongs to privileged bootstrap authority.
+`RedisStore.Bootstrap` performs `FUNCTION LOAD REPLACE` and belongs to privileged bootstrap authority.
 
-Redis Functions execute under the caller ACL. Runtime authority is therefore **not** `+FCALL` alone: lifecycle callers need the exact command set returned by `TimerRuntimeACLCommands(profile)`, plus narrowly scoped key/channel patterns. That declaration excludes bootstrap/admin commands such as `FUNCTION`, `CONFIG`, and `ACL`.
+Redis Functions execute under the caller ACL. Runtime authority is therefore **not** `+FCALL` alone: lifecycle callers need the exact command set returned by `TimerRuntimeACLCommands(profile)`, plus narrowly scoped key/channel patterns. Bootstrap/admin commands such as `FUNCTION`, `CONFIG`, and `ACL` remain excluded.
 
 `WorkerKeyspace` builds literal scope-first Redis prefixes for independently ACL-scoped workers/subsystems. It rejects delimiters, glob characters, hash-tag characters, whitespace, empty segments, and silent normalization so an ACL namespace cannot accidentally broaden through user-supplied pattern syntax.
 
 ## Design rule
 
-Use mathematics where it describes the infrastructure itself: hashing, partitioning, bounded allocation, subnet sizing, geometric capacity classes, or other mechanically verifiable structure. Do not make a compressed mathematical encoding the source of truth for commercial semantics or policy meaning when explicit descriptors are clearer.
+Use mathematics where it describes a real mechanical structure: token buckets, hashing, partitioning, bounded allocation, subnet sizing, shard/fanout geometry, or capacity planning. Keep business and security semantics explicit when a compact mathematical encoding would obscure what a value actually means.
 
-The v2 protocol therefore keeps the useful compactness and bounded registries while making the business/security contract explicit.
+The objective is not to avoid mathematical structure. It is to keep each useful mathematical invariant local, testable, and subordinate to the system contract.
 
 ## Qualification
 
-Required coverage includes:
-
-- v2 `PolicyCode` round trips and reserved-bit rejection;
-- unknown descriptor IDs fail closed;
-- v1 migration fixtures, including the historical `10m = 15` case;
-- semantic ordering derived independently of wire IDs;
-- named lifecycle policy compilation;
-- original-activation absolute deadline reconstruction;
-- independent entitlement ceiling and profile capability rejection;
-- burst independent from sustained rate;
-- Redis lifecycle arm/tick/cancel behavior;
-- subscriber-required shutdown delivery;
-- runtime ACL execution with unrelated key/admin-command denial;
-- strict scope-first keyspace validation;
-- local exact Logma + ratelimiter + Redis composition smoke.
+Required coverage includes v2 round trips/reserved-bit rejection, unknown descriptor rejection, v1 migration fixtures including historical `10m = 15`, independent rate/count/duration semantics, named lifecycle compilation, exact deadline reconstruction, entitlement and profile-capability rejection, Redis lifecycle behavior, subscriber-required shutdown delivery, runtime ACL denial tests, strict keyspace validation, and exact Logma + ratelimiter + Redis composition.
 
 `.github/requests/test.txt` is the push pseudo-dispatch trigger. A source commit is not qualified merely because it exists; consumers should pin a revision contained in an exact successful qualification run.
