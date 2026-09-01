@@ -147,6 +147,29 @@ func TimerCancelFunctionName(d Definition) string {
 	}
 }
 
+// TimerRuntimeACLCommands returns the Redis commands a caller must be allowed
+// to execute for the timer FCALL entry points. Redis Functions run under the
+// caller's ACL, so +FCALL alone is insufficient. The returned commands do not
+// include bootstrap/admin commands such as FUNCTION LOAD or CONFIG.
+func TimerRuntimeACLCommands(d Definition) []string {
+	if !Capabilities(d).HasAll(CapabilityTimer) {
+		return nil
+	}
+	return []string{
+		"fcall",
+		"type",
+		"time",
+		"zadd",
+		"hset",
+		"hexists",
+		"zrangebyscore",
+		"hget",
+		"publish",
+		"zrem",
+		"hdel",
+	}
+}
+
 func LibraryName(d Definition) string {
 	if d.kind == "" {
 		return ""
