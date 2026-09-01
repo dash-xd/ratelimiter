@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: xd-dash/logma
-          ref: 5648cf077c75c49b37ba016ce3c03c592d105c48
+          ref: e5a3f99c16ff94294af9f1b5fdafbd87f2d430a7
           path: .deps/logma
 
       - name: Set up Go
