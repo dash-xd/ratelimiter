@@ -101,21 +101,19 @@ func TestAllocatePolicyUsesExplicitPlanCeilings(t *testing.T) {
 	resolver := ratelimiter.TargetResolverFunc(func(ratelimiter.Input, ratelimiter.Stage) []ratelimiter.Target { return nil })
 	profile := preflightprofile.New(resolver)
 	rate, _ := ratelimiter.NewLimitID(64)
-	burst, _ := ratelimiter.NewLimitID(16)
 	publishes, _ := ratelimiter.NewLimitID(100)
 	entitlement := ratelimiter.Entitlement{
 		Features:     ratelimiter.FeatureTimer,
 		MaxRate:      rate,
-		MaxBurst:     burst,
 		MaxPublishes: publishes,
 		MaxDuration:  ratelimiter.Duration20M,
 	}
 
-	policy, err := ratelimiter.AllocatePolicy(profile, entitlement, ratelimiter.StrategyBurstFirst)
+	policy, err := ratelimiter.AllocatePolicy(profile, entitlement, ratelimiter.StrategyRateFirst)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.Rate.Value() != 64 || policy.Burst.Value() != 16 || policy.Publishes.Value() != 100 || policy.Duration.Duration() != 20*time.Minute {
+	if policy.Rate.Value() != 64 || policy.Publishes.Value() != 100 || policy.Duration.Duration() != 20*time.Minute {
 		t.Fatalf("allocated policy = %#v", policy)
 	}
 }
@@ -133,7 +131,7 @@ func TestBurstCanScaleIndependentlyFromSustainedRate(t *testing.T) {
 	}
 }
 
-func TestUnsupportedFutureAxesFailProfileValidation(t *testing.T) {
+func TestBurstRequiresAnEnforcingProfile(t *testing.T) {
 	burst, _ := ratelimiter.NewLimitID(4)
 	policy := ratelimiter.PolicySpec{Burst: burst}
 	if err := ratelimiter.ValidatePolicy(minimalprofile.New(), policy, ratelimiter.EntitlementFor(policy)); err == nil {
