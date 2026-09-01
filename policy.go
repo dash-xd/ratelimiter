@@ -68,106 +68,88 @@ func (c ScaleClass) energyMagnitude() uint16 {
 	return uint16(bits.Len64(value))
 }
 
+// DurationClass is a stable PolicyCode wire value, not an ordering ordinal.
+// Existing numeric values are protocol and must never be renumbered. Semantic
+// properties such as actual duration, allocation order, and energy weight live
+// in durationDescriptors below.
 type DurationClass uint8
 
 const (
-	DurationNone DurationClass = iota
-	Duration1S
-	Duration3S
-	Duration10S
-	Duration30S
-	Duration1M
-	Duration5M
-	Duration20M
-	Duration1H
-	Duration6H
-	Duration24H
-	Duration3D
-	Duration7D
-	Duration14D
-	Duration30D
-
-	// Duration10M is appended rather than inserted between Duration5M and
-	// Duration20M so every existing encoded PolicyCode keeps its original
-	// duration byte. Duration ordering therefore uses real time.Duration values,
-	// not enum ordinals.
-	Duration10M
+	DurationNone DurationClass = 0
+	Duration1S   DurationClass = 1
+	Duration3S   DurationClass = 2
+	Duration10S  DurationClass = 3
+	Duration30S  DurationClass = 4
+	Duration1M   DurationClass = 5
+	Duration5M   DurationClass = 6
+	Duration20M  DurationClass = 7
+	Duration1H   DurationClass = 8
+	Duration6H   DurationClass = 9
+	Duration24H  DurationClass = 10
+	Duration3D   DurationClass = 11
+	Duration7D   DurationClass = 12
+	Duration14D  DurationClass = 13
+	Duration30D  DurationClass = 14
+	Duration10M  DurationClass = 15
 )
 
-var orderedDurationClasses = []DurationClass{
-	DurationNone,
-	Duration1S,
-	Duration3S,
-	Duration10S,
-	Duration30S,
-	Duration1M,
-	Duration5M,
-	Duration10M,
-	Duration20M,
-	Duration1H,
-	Duration6H,
-	Duration24H,
-	Duration3D,
-	Duration7D,
-	Duration14D,
-	Duration30D,
+type durationDescriptor struct {
+	Class        DurationClass
+	Duration     time.Duration
+	EnergyWeight uint16
+}
+
+var durationDescriptors = []durationDescriptor{
+	{Class: DurationNone, Duration: 0, EnergyWeight: 0},
+	{Class: Duration1S, Duration: time.Second, EnergyWeight: 1},
+	{Class: Duration3S, Duration: 3 * time.Second, EnergyWeight: 2},
+	{Class: Duration10S, Duration: 10 * time.Second, EnergyWeight: 3},
+	{Class: Duration30S, Duration: 30 * time.Second, EnergyWeight: 4},
+	{Class: Duration1M, Duration: time.Minute, EnergyWeight: 5},
+	{Class: Duration5M, Duration: 5 * time.Minute, EnergyWeight: 6},
+	// 10m was added after the original wire values were already durable. It gets
+	// a new wire code but is ordered semantically between 5m and 20m. Its energy
+	// weight is explicit rather than inferred from its wire code.
+	{Class: Duration10M, Duration: 10 * time.Minute, EnergyWeight: 7},
+	{Class: Duration20M, Duration: 20 * time.Minute, EnergyWeight: 7},
+	{Class: Duration1H, Duration: time.Hour, EnergyWeight: 8},
+	{Class: Duration6H, Duration: 6 * time.Hour, EnergyWeight: 9},
+	{Class: Duration24H, Duration: 24 * time.Hour, EnergyWeight: 10},
+	{Class: Duration3D, Duration: 3 * 24 * time.Hour, EnergyWeight: 11},
+	{Class: Duration7D, Duration: 7 * 24 * time.Hour, EnergyWeight: 12},
+	{Class: Duration14D, Duration: 14 * 24 * time.Hour, EnergyWeight: 13},
+	{Class: Duration30D, Duration: 30 * 24 * time.Hour, EnergyWeight: 14},
+}
+
+func durationDescriptorFor(class DurationClass) (durationDescriptor, bool) {
+	for _, descriptor := range durationDescriptors {
+		if descriptor.Class == class {
+			return descriptor, true
+		}
+	}
+	return durationDescriptor{}, false
 }
 
 func (c DurationClass) Duration() time.Duration {
-	switch c {
-	case DurationNone:
-		return 0
-	case Duration1S:
-		return time.Second
-	case Duration3S:
-		return 3 * time.Second
-	case Duration10S:
-		return 10 * time.Second
-	case Duration30S:
-		return 30 * time.Second
-	case Duration1M:
-		return time.Minute
-	case Duration5M:
-		return 5 * time.Minute
-	case Duration10M:
-		return 10 * time.Minute
-	case Duration20M:
-		return 20 * time.Minute
-	case Duration1H:
-		return time.Hour
-	case Duration6H:
-		return 6 * time.Hour
-	case Duration24H:
-		return 24 * time.Hour
-	case Duration3D:
-		return 3 * 24 * time.Hour
-	case Duration7D:
-		return 7 * 24 * time.Hour
-	case Duration14D:
-		return 14 * 24 * time.Hour
-	case Duration30D:
-		return 30 * 24 * time.Hour
-	default:
+	descriptor, ok := durationDescriptorFor(c)
+	if !ok {
 		return 0
 	}
+	return descriptor.Duration
 }
 
 func (c DurationClass) energyMagnitude() uint16 {
-	if c == DurationNone {
+	descriptor, ok := durationDescriptorFor(c)
+	if !ok {
 		return 0
 	}
-	// Preserve every historical duration's energy contribution. The new 10m
-	// class shares the 20m contribution rather than renumbering older codes.
-	if c == Duration10M {
-		return uint16(Duration20M)
-	}
-	return uint16(c)
+	return descriptor.EnergyWeight
 }
 
 func DurationClassFor(duration time.Duration) (DurationClass, error) {
-	for _, class := range orderedDurationClasses {
-		if class.Duration() == duration {
-			return class, nil
+	for _, descriptor := range durationDescriptors {
+		if descriptor.Duration == duration {
+			return descriptor.Class, nil
 		}
 	}
 	return 0, fmt.Errorf("duration %s is not a supported duration class", duration)
@@ -184,7 +166,7 @@ type PolicySpec struct {
 }
 
 func (p PolicySpec) Validate() error {
-	if p.Duration != DurationNone && p.Duration.Duration() == 0 {
+	if _, ok := durationDescriptorFor(p.Duration); !ok {
 		return fmt.Errorf("unknown duration class %d", p.Duration)
 	}
 	if p.Strategy > StrategyBurstFirst {
@@ -300,6 +282,9 @@ func (e Entitlement) Allows(policy PolicySpec) error {
 	if err := policy.Validate(); err != nil {
 		return err
 	}
+	if _, ok := durationDescriptorFor(e.MaxDuration); !ok {
+		return fmt.Errorf("unknown entitlement duration class %d", e.MaxDuration)
+	}
 	requiredFeatures := policy.RequiredFeatures()
 	if requiredFeatures&^e.Features != 0 {
 		return fmt.Errorf("policy features %#x exceed entitlement features %#x", requiredFeatures, e.Features)
@@ -383,6 +368,9 @@ func AllocatePolicy(profile Profile, entitlement Entitlement, strategy Strategy)
 	if err := profiledef.Validate(profile); err != nil {
 		return PolicySpec{}, err
 	}
+	if _, ok := durationDescriptorFor(entitlement.MaxDuration); !ok {
+		return PolicySpec{}, fmt.Errorf("unknown entitlement duration class %d", entitlement.MaxDuration)
+	}
 
 	policy := PolicySpec{Strategy: strategy}
 	order := allocationOrder(strategy)
@@ -463,10 +451,9 @@ func advancePolicy(policy PolicySpec, entitlement Entitlement, dimension allocat
 func nextDurationClass(current, ceiling DurationClass) (DurationClass, bool) {
 	currentDuration := current.Duration()
 	ceilingDuration := ceiling.Duration()
-	for _, candidate := range orderedDurationClasses {
-		duration := candidate.Duration()
-		if duration > currentDuration && duration <= ceilingDuration {
-			return candidate, true
+	for _, descriptor := range durationDescriptors {
+		if descriptor.Duration > currentDuration && descriptor.Duration <= ceilingDuration {
+			return descriptor.Class, true
 		}
 	}
 	return current, false
