@@ -7,10 +7,10 @@ import (
 	ratelimiter "github.com/dash-xd/ratelimiter"
 )
 
-func TestLifecycleDurationClassesRoundTripThroughPolicyCode(t *testing.T) {
+func TestLifecycleDurationIDsRoundTripThroughPolicyCode(t *testing.T) {
 	cases := []struct {
-		class ratelimiter.DurationClass
-		want  time.Duration
+		id   ratelimiter.DurationID
+		want time.Duration
 	}{
 		{ratelimiter.Duration30S, 30 * time.Second},
 		{ratelimiter.Duration1M, time.Minute},
@@ -25,10 +25,10 @@ func TestLifecycleDurationClassesRoundTripThroughPolicyCode(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		if got := tc.class.Duration(); got != tc.want {
-			t.Fatalf("duration class %d = %s, want %s", tc.class, got, tc.want)
+		if got := tc.id.Duration(); got != tc.want {
+			t.Fatalf("duration id %d = %s, want %s", tc.id, got, tc.want)
 		}
-		policy, err := ratelimiter.LifecyclePolicy(tc.class)
+		policy, err := ratelimiter.LifecyclePolicy(tc.id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -40,23 +40,22 @@ func TestLifecycleDurationClassesRoundTripThroughPolicyCode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if decoded.Duration != tc.class {
-			t.Fatalf("decoded duration = %d, want %d", decoded.Duration, tc.class)
+		if decoded.Duration != tc.id {
+			t.Fatalf("decoded duration = %d, want %d", decoded.Duration, tc.id)
 		}
 	}
 }
 
-func TestTenMinuteDurationDoesNotRenumberExistingPolicyCodes(t *testing.T) {
-	// These numeric duration bytes were already persisted before 10m existed.
-	// They must remain stable because PolicyCode is durable lifecycle intent.
-	want := map[ratelimiter.DurationClass]uint64{
+func TestV2DurationRegistrySlotsTenMinutesNaturally(t *testing.T) {
+	want := map[ratelimiter.DurationID]uint64{
 		ratelimiter.Duration5M:  6,
-		ratelimiter.Duration20M: 7,
-		ratelimiter.Duration1H:  8,
-		ratelimiter.Duration30D: 14,
+		ratelimiter.Duration10M: 7,
+		ratelimiter.Duration20M: 8,
+		ratelimiter.Duration1H:  9,
+		ratelimiter.Duration30D: 15,
 	}
-	for class, durationByte := range want {
-		policy, err := ratelimiter.LifecyclePolicy(class)
+	for id, durationByte := range want {
+		policy, err := ratelimiter.LifecyclePolicy(id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -64,28 +63,19 @@ func TestTenMinuteDurationDoesNotRenumberExistingPolicyCodes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := (uint64(code) >> 24) & 0xff; got != durationByte {
-			t.Fatalf("duration byte for %v = %d, want historical %d", class, got, durationByte)
+		if got := uint8(uint64(code) >> 60); got != ratelimiter.PolicyVersion2 {
+			t.Fatalf("version = %d, want v2", got)
 		}
-	}
-
-	policy, err := ratelimiter.LifecyclePolicy(ratelimiter.Duration10M)
-	if err != nil {
-		t.Fatal(err)
-	}
-	code, err := ratelimiter.EncodePolicy(policy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := (uint64(code) >> 24) & 0xff; got != 15 {
-		t.Fatalf("10m duration byte = %d, want appended code 15", got)
+		if got := (uint64(code) >> 24) & 0xff; got != durationByte {
+			t.Fatalf("duration byte for %v = %d, want %d", id, got, durationByte)
+		}
 	}
 }
 
 func TestNamedLifecyclePoliciesCompileToFixedDurations(t *testing.T) {
 	cases := []struct {
 		name ratelimiter.LifecyclePolicyName
-		want ratelimiter.DurationClass
+		want ratelimiter.DurationID
 	}{
 		{ratelimiter.LifecycleSmoke30S, ratelimiter.Duration30S},
 		{ratelimiter.LifecycleSmoke1M, ratelimiter.Duration1M},
@@ -128,7 +118,6 @@ func TestLifecycleDeadlineUsesOriginalActivationTime(t *testing.T) {
 		t.Fatalf("deadline = %s, want %s", deadline, want)
 	}
 
-	// A reconstruction a week later must still resolve the original deadline.
 	reconstructed, err := ratelimiter.LifecycleDeadline(activated, code)
 	if err != nil {
 		t.Fatal(err)
