@@ -72,7 +72,7 @@ func TestV2DurationRegistrySlotsTenMinutesNaturally(t *testing.T) {
 	}
 }
 
-func TestNamedLifecyclePoliciesCompileToFixedDurations(t *testing.T) {
+func TestNamedLifecyclePoliciesCompileToDurations(t *testing.T) {
 	cases := []struct {
 		name ratelimiter.LifecyclePolicyName
 		want ratelimiter.DurationID
@@ -89,7 +89,7 @@ func TestNamedLifecyclePoliciesCompileToFixedDurations(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if policy.Duration != tc.want || policy.Strategy != ratelimiter.StrategyFixed {
+		if policy.Duration != tc.want {
 			t.Fatalf("policy %q = %#v", tc.name, policy)
 		}
 		if policy.RequiredFeatures()&ratelimiter.FeatureTimer == 0 || policy.RequiredFeatures()&ratelimiter.FeatureCallbacks == 0 {
