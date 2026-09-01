@@ -18,7 +18,6 @@ const (
 	maxEventContextBytes  = 16 * 1024
 )
 
-// Stage identifies an observable point in the rate-limiter lifecycle.
 type Stage string
 
 const (
@@ -28,9 +27,6 @@ const (
 	StageShutdown  Stage = "shutdown"
 )
 
-// Purpose describes the intended non-authoritative use of a Pub/Sub callback.
-// Correctness-sensitive work such as billing, authorization, guaranteed audit,
-// durable jobs, and data mutation should use a durable transport instead.
 type Purpose string
 
 const (
@@ -45,20 +41,14 @@ const (
 	PurposeLifecycleControl Purpose = "lifecycle_control"
 )
 
-// Metadata is deliberately string-to-string. Keeping callback metadata flat
-// makes event validation cheap and keeps Pub/Sub payloads small and predictable.
 type Metadata map[string]string
 
-// Namespace is optional routing metadata. It is not interpreted by the limiter
-// itself; channel resolvers can use it to preserve an existing hierarchy.
 type Namespace struct {
 	Environment string `json:"environment,omitempty"`
 	Parent      string `json:"parent,omitempty"`
 	Child       string `json:"child,omitempty"`
 }
 
-// Request describes the logical work being admitted. None of these fields are
-// HTTP-specific and all are optional; ID is strongly recommended for tracing.
 type Request struct {
 	ID        string    `json:"id,omitempty"`
 	Subject   string    `json:"subject,omitempty"`
@@ -67,55 +57,40 @@ type Request struct {
 	Namespace Namespace `json:"namespace,omitempty"`
 }
 
-// TimerCondition arms a Redis-owned shutdown deadline during preflight.
-//
-// By default an already-armed timer is left unchanged, so repeated preflight
-// calls cannot extend a workload's lifetime. Set Reset to explicitly replace
-// the existing deadline and shutdown context.
 type TimerCondition struct {
 	After time.Duration
 	Reset bool
 }
 
-// ShutdownConditions contains the conditions that can emit a lifecycle shutdown
-// signal. Timer is the first condition; additional counters can be added here
-// without changing the lifecycle dispatch path.
 type ShutdownConditions struct {
 	Timer *TimerCondition
 }
 
-// PreflightOptions controls lifecycle work performed at the preflight stage.
 type PreflightOptions struct {
 	Shutdown ShutdownConditions
 }
 
-// Input is the normalized unit passed to the limiter.
 type Input struct {
-	// Bucket identifies the sliding-window bucket and is the only required field.
-	// It becomes the Redis Cluster hash tag, so braces are rejected.
 	Bucket string
-
 	Request Request
-
-	// CallbackData is merged into each target's predetermined Data. Values here
-	// win on duplicate keys, allowing per-request enrichment without rebuilding a
-	// static profile.
 	CallbackData Metadata
-
-	// Preflight optionally arms Redis-owned lifecycle conditions. Conditions are
-	// supported by the preflight and lifecycle profiles.
 	Preflight PreflightOptions
 }
 
-// Limit controls the exact rolling window.
+// Limit controls the existing exact rolling-window limiter.
 type Limit struct {
 	MaxRequests int64
 	Window      time.Duration
 }
 
-// Decision is the result of one atomic Redis Function invocation. Rate limiting
-// itself is a decision, not an infrastructure error: Check returns nil error for
-// both allowed and blocked requests.
+// BurstLimit controls a token bucket. RequestsPerSecond is the sustained refill
+// rate and Capacity is the maximum number of immediately spendable tokens.
+// The bucket starts full. Redis TIME is authoritative for refill calculations.
+type BurstLimit struct {
+	RequestsPerSecond int64
+	Capacity          int64
+}
+
 type Decision struct {
 	Allowed         bool
 	Count           int64
@@ -126,8 +101,15 @@ type Decision struct {
 	PublishFailures int64
 }
 
-// TickResult describes one bounded evaluation of Redis-owned preflight
-// lifecycle conditions for a bucket.
+// BurstDecision is intentionally smaller than Decision because token-bucket
+// admission has no rolling-window count or callback/blocked-state side effects.
+type BurstDecision struct {
+	Allowed    bool
+	Remaining  int64
+	RetryAfter time.Duration
+	ObservedAt time.Time
+}
+
 type TickResult struct {
 	Dispatched      int64
 	Pending         int64
@@ -137,9 +119,14 @@ type TickResult struct {
 
 var ErrRateLimited = errors.New("rate limit exceeded")
 
-// Err returns ErrRateLimited only when the request was denied. It is a
-// convenience for call sites that still prefer the legacy error-shaped flow.
 func (d Decision) Err() error {
+	if d.Allowed {
+		return nil
+	}
+	return ErrRateLimited
+}
+
+func (d BurstDecision) Err() error {
 	if d.Allowed {
 		return nil
 	}
@@ -155,6 +142,21 @@ func (l Limit) validate() error {
 	}
 	if l.Window/time.Millisecond > time.Duration(^uint32(0)) {
 		return errors.New("window is unreasonably large")
+	}
+	return nil
+}
+
+func (l BurstLimit) validate() error {
+	if l.RequestsPerSecond <= 0 {
+		return errors.New("burst requests per second must be greater than zero")
+	}
+	if l.Capacity <= 0 {
+		return errors.New("burst capacity must be greater than zero")
+	}
+	// Keep arithmetic comfortably inside exact IEEE-754 integer range used by
+	// Redis Lua. Policy registries are currently capped far below this bound.
+	if l.RequestsPerSecond > 1_000_000_000 || l.Capacity > 1_000_000_000 {
+		return errors.New("burst limit is unreasonably large")
 	}
 	return nil
 }
