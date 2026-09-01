@@ -120,7 +120,7 @@ func TestAllocatePolicyIsMonotonicAcrossEnergy(t *testing.T) {
 	}
 	if highPolicy.Rate.Value() < lowPolicy.Rate.Value() ||
 		highPolicy.Publishes.Value() < lowPolicy.Publishes.Value() ||
-		highPolicy.Duration < lowPolicy.Duration {
+		highPolicy.Duration.Duration() < lowPolicy.Duration.Duration() {
 		t.Fatalf("allocation regressed: low=%#v high=%#v", lowPolicy, highPolicy)
 	}
 }
