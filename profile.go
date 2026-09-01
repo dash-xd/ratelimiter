@@ -46,3 +46,12 @@ const (
 func ProfileCapabilities(profile Profile) Capability {
 	return profiledef.Capabilities(profile)
 }
+
+// TimerRuntimeACLCommands describes the Redis commands required by this
+// profile's timer FCALL entry points. Redis checks commands issued from a
+// Function against the caller ACL, so deployments must allow these commands in
+// addition to scoping keys/channels. Bootstrap/admin commands are excluded.
+func TimerRuntimeACLCommands(profile Profile) []string {
+	commands := profiledef.TimerRuntimeACLCommands(profile)
+	return append([]string(nil), commands...)
+}
