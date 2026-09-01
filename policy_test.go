@@ -9,22 +9,24 @@ import (
 	preflightprofile "github.com/dash-xd/ratelimiter/profile/preflight"
 )
 
-func TestPolicyCodeRoundTripUsesExplicitLimitIDs(t *testing.T) {
-	three, err := ratelimiter.NewLimitID(3)
+func TestPolicyCodeRoundTripUsesTypedDescriptorIDs(t *testing.T) {
+	burst, err := ratelimiter.NewCountID(3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sixtyFour, err := ratelimiter.NewLimitID(64)
+	publishes, err := ratelimiter.NewCountID(64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if three.Value() != 3 || sixtyFour.Value() != 64 {
-		t.Fatalf("limit decode = %d, %d", three.Value(), sixtyFour.Value())
+	rate, err := ratelimiter.NewRateID(10)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	policy := ratelimiter.PolicySpec{
-		Publishes: sixtyFour,
-		Burst:     three,
+		Rate:       rate,
+		Publishes: publishes,
+		Burst:     burst,
 		Duration:  ratelimiter.Duration30S,
 		Features:  ratelimiter.FeatureCallbacks,
 	}
@@ -47,7 +49,7 @@ func TestPolicyCodeRoundTripUsesExplicitLimitIDs(t *testing.T) {
 func TestCompilePolicyUsesProfileCapabilitiesAndExplicitEntitlement(t *testing.T) {
 	resolver := ratelimiter.TargetResolverFunc(func(ratelimiter.Input, ratelimiter.Stage) []ratelimiter.Target { return nil })
 	profile := preflightprofile.New(resolver)
-	publishes, err := ratelimiter.NewLimitID(64)
+	publishes, err := ratelimiter.NewCountID(64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,8 +71,8 @@ func TestCompilePolicyUsesProfileCapabilitiesAndExplicitEntitlement(t *testing.T
 }
 
 func TestEntitlementRejectsFeaturesAndIndependentCeilings(t *testing.T) {
-	three, _ := ratelimiter.NewLimitID(3)
-	two, _ := ratelimiter.NewLimitID(2)
+	three, _ := ratelimiter.NewCountID(3)
+	two, _ := ratelimiter.NewCountID(2)
 	policy := ratelimiter.PolicySpec{
 		Publishes: three,
 		Burst:     three,
@@ -97,42 +99,34 @@ func TestEntitlementRejectsFeaturesAndIndependentCeilings(t *testing.T) {
 	}
 }
 
-func TestAllocatePolicyUsesExplicitPlanCeilings(t *testing.T) {
-	resolver := ratelimiter.TargetResolverFunc(func(ratelimiter.Input, ratelimiter.Stage) []ratelimiter.Target { return nil })
-	profile := preflightprofile.New(resolver)
-	rate, _ := ratelimiter.NewLimitID(64)
-	publishes, _ := ratelimiter.NewLimitID(100)
-	entitlement := ratelimiter.Entitlement{
-		Features:     ratelimiter.FeatureTimer,
-		MaxRate:      rate,
-		MaxPublishes: publishes,
-		MaxDuration:  ratelimiter.Duration20M,
-	}
-
-	policy, err := ratelimiter.AllocatePolicy(profile, entitlement, ratelimiter.StrategyRateFirst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if policy.Rate.Value() != 64 || policy.Publishes.Value() != 100 || policy.Duration.Duration() != 20*time.Minute {
-		t.Fatalf("allocated policy = %#v", policy)
-	}
-}
-
-func TestBurstCanScaleIndependentlyFromSustainedRate(t *testing.T) {
-	rate, _ := ratelimiter.NewLimitID(10)
-	burst, _ := ratelimiter.NewLimitID(50)
+func TestRateAndBurstAreDifferentUnits(t *testing.T) {
+	rate, _ := ratelimiter.NewRateID(10)
+	burst, _ := ratelimiter.NewCountID(50)
 	policy := ratelimiter.PolicySpec{Rate: rate, Burst: burst}
 	entitlement := ratelimiter.EntitlementFor(policy)
 	if err := entitlement.Allows(policy); err != nil {
 		t.Fatal(err)
 	}
-	if policy.Burst.Value() <= policy.Rate.Value() {
-		t.Fatalf("burst=%d should exceed sustained rate=%d", policy.Burst.Value(), policy.Rate.Value())
+	if policy.Rate.RequestsPerSecond() != 10 {
+		t.Fatalf("rate = %d req/s", policy.Rate.RequestsPerSecond())
+	}
+	if policy.Burst.Value() != 50 {
+		t.Fatalf("burst = %d", policy.Burst.Value())
+	}
+}
+
+func TestEntitlementRejectsRateAbovePlan(t *testing.T) {
+	rate10, _ := ratelimiter.NewRateID(10)
+	rate20, _ := ratelimiter.NewRateID(20)
+	policy := ratelimiter.PolicySpec{Rate: rate20}
+	entitlement := ratelimiter.Entitlement{MaxRate: rate10}
+	if err := entitlement.Allows(policy); err == nil {
+		t.Fatal("expected sustained rate ceiling rejection")
 	}
 }
 
 func TestBurstRequiresAnEnforcingProfile(t *testing.T) {
-	burst, _ := ratelimiter.NewLimitID(4)
+	burst, _ := ratelimiter.NewCountID(4)
 	policy := ratelimiter.PolicySpec{Burst: burst}
 	if err := ratelimiter.ValidatePolicy(minimalprofile.New(), policy, ratelimiter.EntitlementFor(policy)); err == nil {
 		t.Fatal("expected unsupported burst capability to fail")
