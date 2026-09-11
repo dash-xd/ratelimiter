@@ -18,7 +18,8 @@ func TestPolicyBindingUsesExactStringCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	entitlement := ratelimiter.EntitlementFor(policy)
-	binding, err := ratelimiter.NewPolicyBinding(lifecycle.Profile(nil), code, entitlement)
+	profile := lifecycle.New(ratelimiter.TargetResolverFunc(func(ratelimiter.Input, ratelimiter.Stage) []ratelimiter.Target { return nil }))
+	binding, err := ratelimiter.NewPolicyBinding(profile, code, entitlement)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,7 @@ func TestPolicyBindingUsesExactStringCode(t *testing.T) {
 	if decoded.Code == "" || decoded.Profile != "lifecycle" {
 		t.Fatalf("unexpected binding %#v", decoded)
 	}
-	if err := binding.Validate(lifecycle.Profile(nil), entitlement); err != nil {
+	if err := binding.Validate(profile, entitlement); err != nil {
 		t.Fatal(err)
 	}
 }
