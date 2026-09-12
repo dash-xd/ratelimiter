@@ -58,7 +58,7 @@ type Compiler interface {
 
 type Config struct {
 	Name           string
-	Admin           string
+	Admin          string
 	UsernamePrefix string
 	KeyPrefix      string
 	ChannelPrefix  string
@@ -142,13 +142,30 @@ func (p *ACLCompiler) Scope(tenant, username string) (Scope, error) {
 func (p *ACLCompiler) Policy(name string) (Policy, error) {
 	switch strings.TrimSpace(name) {
 	case "", "tenant":
-		return Policy{Name: "tenant", Capabilities: CapabilityData | CapabilityPublish | CapabilitySubscribe}, nil
+		return Policy{
+			Name: "tenant",
+			Capabilities: CapabilityData |
+				CapabilityPublish |
+				CapabilitySubscribe,
+		}, nil
 	case "tenant-functions":
-		return Policy{Name: "tenant-functions", Capabilities: CapabilityData | CapabilityPublish | CapabilitySubscribe | CapabilityFunctions}, nil
+		return Policy{
+			Name: "tenant-functions",
+			Capabilities: CapabilityData |
+				CapabilityPublish |
+				CapabilitySubscribe |
+				CapabilityFunctions,
+		}, nil
 	case "publisher":
-		return Policy{Name: "publisher", Capabilities: CapabilityPublish}, nil
+		return Policy{
+			Name:         "publisher",
+			Capabilities: CapabilityPublish,
+		}, nil
 	case "subscriber":
-		return Policy{Name: "subscriber", Capabilities: CapabilitySubscribe}, nil
+		return Policy{
+			Name:         "subscriber",
+			Capabilities: CapabilitySubscribe,
+		}, nil
 	default:
 		return Policy{}, fmt.Errorf("unknown Redis ACL policy %q", name)
 	}
@@ -176,6 +193,10 @@ var DataCommands = []string{
 	"+multi", "+exec", "+discard", "+watch", "+unwatch",
 }
 
+// FunctionRuntimeCommands are the non-administrative Redis commands used by
+// registered functions in addition to ordinary tenant data and Pub/Sub
+// operations. Keep this list explicit so FCALL does not imply a broad command
+// category grant.
 var FunctionRuntimeCommands = []string{
 	"+time",
 	"+zremrangebyscore",
