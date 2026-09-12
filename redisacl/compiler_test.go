@@ -7,11 +7,11 @@ import (
 
 func TestCompilerScopesTenantResources(t *testing.T) {
 	compiler, err := New(Config{
-		Admin:           "admin",
+		Admin:          "admin",
 		UsernamePrefix: "logma-tenant-",
-		KeyPrefix:       "logma:tenant:",
-		ChannelPrefix:   "tenant:",
-		FunctionPrefix:  "logma_",
+		KeyPrefix:      "logma:tenant:",
+		ChannelPrefix:  "tenant:",
+		FunctionPrefix: "logma_",
 	})
 	if err != nil {
 		t.Fatal(err)
