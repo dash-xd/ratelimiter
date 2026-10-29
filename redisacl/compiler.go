@@ -428,40 +428,40 @@ func (p *ACLCompiler) Rules(spec UserSpec) ([]string, error) {
 }
 
 
-func (p *ACLCompiler) requirementRules(scope Scope, spec UserSpec) ([]string, error) {
+func (p *ACLCompiler) requirementRules(_ Scope, spec UserSpec) ([]string, error) {
 	resourceScope := strings.TrimSpace(spec.ResourceScope)
 	if err := ValidateIdentifier(resourceScope); err != nil {
 		return nil, fmt.Errorf("resource scope: %w", err)
 	}
-	requirements := spec.Requirements
-	if requirements == nil || (len(requirements.KeyPatterns) == 0 && len(requirements.ChannelPatterns) == 0) {
+	req := spec.Requirements
+	if req == nil || (len(req.KeyPatterns) == 0 && len(req.ChannelPatterns) == 0) {
 		return nil, errors.New("provider requirements must include a key or channel pattern")
 	}
-	patterns := make([]string, 0, len(requirements.KeyPatterns)+len(requirements.ChannelPatterns))
-	seen := make(map[string]struct{})
+	patterns := make([]string, 0, len(req.KeyPatterns)+len(req.ChannelPatterns))
+	seenPatterns := make(map[string]struct{})
 	addPattern := func(pattern, prefix string) error {
 		if !strings.HasPrefix(pattern, prefix+resourceScope+":") || strings.ContainsAny(pattern, " \t\r\n") {
 			return fmt.Errorf("provider ACL pattern %q is outside resource scope %q", pattern, resourceScope)
 		}
-		if _, ok := seen[pattern]; !ok {
-			seen[pattern] = struct{}{}
+		if _, ok := seenPatterns[pattern]; !ok {
+			seenPatterns[pattern] = struct{}{}
 			patterns = append(patterns, pattern)
 		}
 		return nil
 	}
-	for _, pattern := range requirements.KeyPatterns {
+	for _, pattern := range req.KeyPatterns {
 		if err := addPattern(pattern, "~"); err != nil {
 			return nil, err
 		}
 	}
-	for _, pattern := range requirements.ChannelPatterns {
+	for _, pattern := range req.ChannelPatterns {
 		if err := addPattern(pattern, "&"); err != nil {
 			return nil, err
 		}
 	}
-	commands := make([]string, 0, len(requirements.Commands))
+	commands := make([]string, 0, len(req.Commands))
 	seenCommands := make(map[string]struct{})
-	for _, command := range requirements.Commands {
+	for _, command := range req.Commands {
 		if !aclCommandRE.MatchString(command) {
 			return nil, fmt.Errorf("invalid provider Redis command %q", command)
 		}
