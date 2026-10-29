@@ -268,10 +268,13 @@ func (p *ACLCompiler) Rules(spec UserSpec) ([]string, error) {
 	return rules, nil
 }
 
-func (p *ACLCompiler) requirementRules(_ Scope, spec UserSpec) ([]string, error) {
+func (p *ACLCompiler) requirementRules(scope Scope, spec UserSpec) ([]string, error) {
 	resourceScope := strings.TrimSpace(spec.ResourceScope)
 	if err := ValidateIdentifier(resourceScope); err != nil {
 		return nil, fmt.Errorf("resource scope: %w", err)
+	}
+	if !strings.HasSuffix(resourceScope, "-"+scope.Tenant) {
+		return nil, fmt.Errorf("resource scope %q does not belong to tenant %q", resourceScope, scope.Tenant)
 	}
 	req := spec.Requirements
 	if req == nil || (len(req.KeyPatterns) == 0 && len(req.ChannelPatterns) == 0) {
