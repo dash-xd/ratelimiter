@@ -194,3 +194,23 @@ func TestCompilerRejectsProviderRequirementsOutsideTenantScope(t *testing.T) {
 		})
 	}
 }
+
+func TestCompilerRejectsResourceScopeForDifferentTenant(t *testing.T) {
+	compiler, err := New(Config{Admin: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = compiler.Rules(UserSpec{
+		Tenant:        "other",
+		Password:      "secret",
+		ResourceScope: "fatline-prod-acme",
+		Requirements: &ProviderRequirements{
+			KeyPatterns: []string{"~fatline-prod-acme:logma:pubsub:*"},
+			Commands:    []string{"hget"},
+		},
+		Reset: true,
+	})
+	if err == nil {
+		t.Fatal("expected a resource scope bound to another tenant to be rejected")
+	}
+}
