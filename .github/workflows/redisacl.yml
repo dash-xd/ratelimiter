@@ -29,6 +29,7 @@ jobs:
           files="$(gofmt -l redisacl)"
           if [[ -n "$files" ]]; then
             printf 'gofmt required:\n%s\n' "$files" >&2
+            gofmt -d $files >&2
             exit 1
           fi
       - name: Vet Redis ACL packages
