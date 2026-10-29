@@ -31,6 +31,12 @@ const (
 	CapabilityConcurrency  Capability = profiledef.CapabilityConcurrency
 )
 
+// ProfileID is the stable machine-facing identifier stored by higher-level
+// bindings. It describes the enforcement shape, never a product tier or role.
+func ProfileID(profile Profile) string {
+	return string(profiledef.KindOf(profile))
+}
+
 func ProfileCapabilities(profile Profile) Capability {
 	return profiledef.Capabilities(profile)
 }
