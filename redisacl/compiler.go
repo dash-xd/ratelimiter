@@ -38,12 +38,20 @@ type Scope struct {
 	FunctionPrefix string
 }
 
+type ProviderRequirements struct {
+	KeyPatterns     []string
+	ChannelPatterns []string
+	Commands        []string
+}
+
 type UserSpec struct {
-	Tenant   string
-	Username string
-	Password string
-	Policy   Policy
-	Reset    bool
+	Tenant        string
+	Username      string
+	Password      string
+	Policy        Policy
+	ResourceScope string
+	Requirements  *ProviderRequirements
+	Reset         bool
 }
 
 // Compiler materializes local Redis ACL rules. It must never be treated as the
@@ -69,7 +77,171 @@ type ACLCompiler struct {
 	config Config
 }
 
-var identifierRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var identifierRE = regexp.MustCompile(`^[A-Za-z0-9._-]+// Package redisacl compiles service-local Redis execution identities.
+//
+// It is not a distributed identity provider and does not authenticate external
+// principals. Consumers authenticate and authorize callers elsewhere, then use
+// this package to constrain the Redis connection that executes approved work.
+package redisacl
+
+import (
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+type Capability uint32
+
+const (
+	CapabilityData Capability = 1 << iota
+	CapabilityPublish
+	CapabilitySubscribe
+	CapabilityFunctions
+)
+
+type Policy struct {
+	Name         string
+	Capabilities Capability
+}
+
+func (p Policy) Has(cap Capability) bool {
+	return p.Capabilities&cap == cap
+}
+
+type Scope struct {
+	Tenant         string
+	Username       string
+	KeyPrefix      string
+	ChannelPrefix  string
+	FunctionPrefix string
+}
+
+type ProviderRequirements struct {
+	KeyPatterns     []string
+	ChannelPatterns []string
+	Commands        []string
+}
+
+type UserSpec struct {
+	Tenant        string
+	Username      string
+	Password      string
+	Policy        Policy
+	ResourceScope string
+	Requirements  *ProviderRequirements
+	Reset         bool
+}
+
+// Compiler materializes local Redis ACL rules. It must never be treated as the
+// source of global identity or organization authorization policy.
+type Compiler interface {
+	Name() string
+	AdminUser() string
+	Scope(tenant, username string) (Scope, error)
+	Rules(UserSpec) ([]string, error)
+	Policy(name string) (Policy, error)
+}
+
+type Config struct {
+	Name           string
+	Admin          string
+	UsernamePrefix string
+	KeyPrefix      string
+	ChannelPrefix  string
+	FunctionPrefix string
+}
+
+type ACLCompiler struct {
+	config Config
+}
+
+)
+var aclCommandRE = regexp.MustCompile(`^[a-z][a-z0-9|.-]*// Package redisacl compiles service-local Redis execution identities.
+//
+// It is not a distributed identity provider and does not authenticate external
+// principals. Consumers authenticate and authorize callers elsewhere, then use
+// this package to constrain the Redis connection that executes approved work.
+package redisacl
+
+import (
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+type Capability uint32
+
+const (
+	CapabilityData Capability = 1 << iota
+	CapabilityPublish
+	CapabilitySubscribe
+	CapabilityFunctions
+)
+
+type Policy struct {
+	Name         string
+	Capabilities Capability
+}
+
+func (p Policy) Has(cap Capability) bool {
+	return p.Capabilities&cap == cap
+}
+
+type Scope struct {
+	Tenant         string
+	Username       string
+	KeyPrefix      string
+	ChannelPrefix  string
+	FunctionPrefix string
+}
+
+type ProviderRequirements struct {
+	KeyPatterns     []string
+	ChannelPatterns []string
+	Commands        []string
+}
+
+type UserSpec struct {
+	Tenant        string
+	Username      string
+	Password      string
+	Policy        Policy
+	ResourceScope string
+	Requirements  *ProviderRequirements
+	Reset         bool
+}
+
+// Compiler materializes local Redis ACL rules. It must never be treated as the
+// source of global identity or organization authorization policy.
+type Compiler interface {
+	Name() string
+	AdminUser() string
+	Scope(tenant, username string) (Scope, error)
+	Rules(UserSpec) ([]string, error)
+	Policy(name string) (Policy, error)
+}
+
+type Config struct {
+	Name           string
+	Admin          string
+	UsernamePrefix string
+	KeyPrefix      string
+	ChannelPrefix  string
+	FunctionPrefix string
+}
+
+type ACLCompiler struct {
+	config Config
+}
+
+)
+
+var forbiddenProviderCommands = map[string]struct{}{
+	"acl": {}, "config": {}, "function": {}, "flushall": {}, "flushdb": {},
+	"module": {}, "keys": {}, "scan": {},
+}
 
 func ValidateIdentifier(value string) error {
 	if value == "" || len(value) > 64 || !identifierRE.MatchString(value) {
@@ -213,6 +385,12 @@ func (p *ACLCompiler) Rules(spec UserSpec) ([]string, error) {
 	if spec.Password == "" {
 		return nil, errors.New("password is required")
 	}
+	if spec.Requirements != nil {
+		if spec.Policy.Name != "" || spec.Policy.Capabilities != 0 {
+			return nil, errors.New("provider requirements cannot be combined with a named ACL profile")
+		}
+		return p.requirementRules(scope, spec)
+	}
 	if strings.TrimSpace(spec.Policy.Name) == "" {
 		spec.Policy, err = p.Policy("tenant")
 		if err != nil {
@@ -246,6 +424,70 @@ func (p *ACLCompiler) Rules(spec UserSpec) ([]string, error) {
 		rules = append(rules, FunctionRuntimeCommands...)
 	}
 
+	return rules, nil
+}
+
+
+func (p *ACLCompiler) requirementRules(scope Scope, spec UserSpec) ([]string, error) {
+	resourceScope := strings.TrimSpace(spec.ResourceScope)
+	if err := ValidateIdentifier(resourceScope); err != nil {
+		return nil, fmt.Errorf("resource scope: %w", err)
+	}
+	requirements := spec.Requirements
+	if requirements == nil || (len(requirements.KeyPatterns) == 0 && len(requirements.ChannelPatterns) == 0) {
+		return nil, errors.New("provider requirements must include a key or channel pattern")
+	}
+	patterns := make([]string, 0, len(requirements.KeyPatterns)+len(requirements.ChannelPatterns))
+	seen := make(map[string]struct{})
+	addPattern := func(pattern, prefix string) error {
+		if !strings.HasPrefix(pattern, prefix+resourceScope+":") || strings.ContainsAny(pattern, " \t\r\n") {
+			return fmt.Errorf("provider ACL pattern %q is outside resource scope %q", pattern, resourceScope)
+		}
+		if _, ok := seen[pattern]; !ok {
+			seen[pattern] = struct{}{}
+			patterns = append(patterns, pattern)
+		}
+		return nil
+	}
+	for _, pattern := range requirements.KeyPatterns {
+		if err := addPattern(pattern, "~"); err != nil {
+			return nil, err
+		}
+	}
+	for _, pattern := range requirements.ChannelPatterns {
+		if err := addPattern(pattern, "&"); err != nil {
+			return nil, err
+		}
+	}
+	commands := make([]string, 0, len(requirements.Commands))
+	seenCommands := make(map[string]struct{})
+	for _, command := range requirements.Commands {
+		if !aclCommandRE.MatchString(command) {
+			return nil, fmt.Errorf("invalid provider Redis command %q", command)
+		}
+		root, _, _ := strings.Cut(command, "|")
+		if _, forbidden := forbiddenProviderCommands[root]; forbidden {
+			return nil, fmt.Errorf("provider Redis command %q is not permitted", command)
+		}
+		if _, ok := seenCommands[command]; !ok {
+			seenCommands[command] = struct{}{}
+			commands = append(commands, command)
+		}
+	}
+	if len(commands) == 0 {
+		return nil, errors.New("provider requirements must include commands")
+	}
+	rules := make([]string, 0, 8+len(patterns)+len(commands))
+	if spec.Reset {
+		rules = append(rules, "reset")
+	} else {
+		rules = append(rules, "-@all", "resetkeys", "resetchannels", "clearselectors", "resetpass")
+	}
+	rules = append(rules, "on", ">"+spec.Password, "-@all", "resetkeys", "resetchannels", "+ping")
+	rules = append(rules, patterns...)
+	for _, command := range commands {
+		rules = append(rules, "+"+command)
+	}
 	return rules, nil
 }
 
