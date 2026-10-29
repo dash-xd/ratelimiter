@@ -121,3 +121,76 @@ func TestPublisherAndSubscriberStayDistinct(t *testing.T) {
 		t.Fatalf("subscriber rules are not narrow: %#v", subRules)
 	}
 }
+
+func TestCompilerCombinesProviderRequirementsWithinTenantScope(t *testing.T) {
+	compiler, err := New(Config{Admin: "admin", UsernamePrefix: "fatline-tenant-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := compiler.Rules(UserSpec{
+		Tenant:        "acme",
+		Password:      "secret",
+		ResourceScope: "fatline-prod-acme",
+		Requirements: &ProviderRequirements{
+			KeyPatterns: []string{
+				"~fatline-prod-acme:logma:pubsub:*",
+				"~fatline-prod-acme:skymill:stream:github.webhooks",
+			},
+			ChannelPatterns: []string{"&fatline-prod-acme:logma:events:*"},
+			Commands:        []string{"hget", "xadd", "select"},
+		},
+		Reset: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"~fatline-prod-acme:logma:pubsub:*",
+		"~fatline-prod-acme:skymill:stream:github.webhooks",
+		"&fatline-prod-acme:logma:events:*",
+		"+hget", "+xadd", "+select",
+	} {
+		if !slices.Contains(rules, want) {
+			t.Fatalf("missing %q in %#v", want, rules)
+		}
+	}
+	for _, forbidden := range []string{
+		"~fatline-prod:*", "~fatline-prod-other:logma:pubsub:*",
+		"+acl", "+config", "+function", "+keys", "+scan", "+@all",
+	} {
+		if slices.Contains(rules, forbidden) {
+			t.Fatalf("unexpected grant %q in %#v", forbidden, rules)
+		}
+	}
+}
+
+func TestCompilerRejectsProviderRequirementsOutsideTenantScope(t *testing.T) {
+	compiler, err := New(Config{Admin: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, requirements := range map[string]*ProviderRequirements{
+		"foreign tenant key": {
+			KeyPatterns: []string{"~fatline-prod-other:logma:pubsub:*"},
+			Commands:    []string{"hget"},
+		},
+		"foreign tenant channel": {
+			ChannelPatterns: []string{"&fatline-prod-other:events:*"},
+			Commands:        []string{"subscribe"},
+		},
+		"administration": {
+			KeyPatterns: []string{"~fatline-prod-acme:logma:pubsub:*"},
+			Commands:    []string{"acl|setuser"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := compiler.Rules(UserSpec{
+				Tenant: "acme", Password: "secret", ResourceScope: "fatline-prod-acme",
+				Requirements: requirements,
+			})
+			if err == nil {
+				t.Fatal("expected provider authority to be rejected")
+			}
+		})
+	}
+}
